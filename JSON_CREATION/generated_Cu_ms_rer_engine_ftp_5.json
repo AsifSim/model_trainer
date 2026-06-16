@@ -1,0 +1,143 @@
+{
+    "requestFields": [],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "YesNoFlags",
+            "consumes": [],
+            "entity": "xyes_no_flag",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [],
+            "produces": [
+                "id",
+                "code"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "PricingActions",
+            "consumes": [],
+            "entity": "p_pricing_action",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [],
+            "produces": [
+                "id",
+                "approved"
+            ]
+        },
+        {
+            "id": 3,
+            "name": "FuturePricingRecords",
+            "consumes": [],
+            "entity": "cu_rer_engine_pricing",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "future_price",
+                    "rightSource": "NOT NULL"
+                },
+                {
+                    "leftField": "future_effective_date",
+                    "rightSource": "NOT NULL"
+                }
+            ],
+            "produces": [
+                "uuid",
+                "pricing_action",
+                "future_price",
+                "future_effective_date"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "FuturePricePublishEvaluation",
+            "consumes": [
+                "YesNoFlags",
+                "PricingActions",
+                "FuturePricingRecords"
+            ],
+            "steps": [
+                {
+                    "description": "Build yesNoMap using xyes_no_flag.id -> xyes_no_flag.code"
+                },
+                {
+                    "description": "Build pricingActionApprovedMap using p_pricing_action.id -> p_pricing_action.approved"
+                },
+                {
+                    "description": "For each FuturePricingRecord lookup approved flag from PricingActions"
+                },
+                {
+                    "description": "Translate approved flag using yesNoMap"
+                },
+                {
+                    "description": "Only process records where approval = Yes"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "pricing_action is null",
+                    "output": {
+                        "operation": "SKIP_RECORD",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "approved flag is null",
+                    "output": {
+                        "operation": "SKIP_RECORD",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "approval != Yes",
+                    "output": {
+                        "operation": "SKIP_RECORD",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "approval = Yes",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "cu_rer_engine_pricing",
+                        "targetRecord": {
+                            "uuid": "${FuturePricingRecords.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "FuturePricingRecords.future_price",
+                                "targetField": "publish_price"
+                            },
+                            {
+                                "sourceField": "FuturePricingRecords.future_effective_date",
+                                "targetField": "publish_effective_date"
+                            },
+                            {
+                                "sourceField": "null",
+                                "targetField": "future_price"
+                            },
+                            {
+                                "sourceField": "null",
+                                "targetField": "future_effective_date"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

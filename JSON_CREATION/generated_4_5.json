@@ -1,0 +1,142 @@
+{
+    "requestFields": [
+        "dealer_code"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "DealerData",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "dealer",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "dealer_code",
+                    "rightSource": "Request.dealer_code"
+                }
+            ],
+            "produces": [
+                "dealer_category",
+                "annual_sales_volume",
+                "operating_region"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "IncentiveProgram",
+            "consumes": [
+                "DealerData"
+            ],
+            "entity": "incentive_program",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "dealer_category",
+                    "rightSource": "DealerData.dealer_category"
+                },
+                {
+                    "leftField": "operating_region",
+                    "rightSource": "DealerData.operating_region"
+                }
+            ],
+            "produces": [
+                "incentive_percentage",
+                "minimum_sales_target",
+                "uuid"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "DealerIncentiveCalculation",
+            "consumes": [
+                "Request",
+                "DealerData",
+                "IncentiveProgram"
+            ],
+            "steps": [
+                {
+                    "description": "Calculate incentiveAmount = DealerData.annual_sales_volume * IncentiveProgram.incentive_percentage / 100"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "No records exist for DealerData",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No records exist for IncentiveProgram",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "DealerData.annual_sales_volume >= IncentiveProgram.minimum_sales_target",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "incentive_program",
+                        "targetRecord": {
+                            "uuid": "${IncentiveProgram.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "DealerData.annual_sales_volume",
+                                "targetField": "annual_sales_volume"
+                            },
+                            {
+                                "sourceField": "incentiveAmount",
+                                "targetField": "incentive_amount"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "DealerData.annual_sales_volume < IncentiveProgram.minimum_sales_target",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "dealer_incentive_review",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.dealer_code",
+                                "targetField": "dealer_code"
+                            },
+                            {
+                                "sourceField": "DealerData.dealer_category",
+                                "targetField": "dealer_category"
+                            },
+                            {
+                                "sourceField": "DealerData.annual_sales_volume",
+                                "targetField": "annual_sales_volume"
+                            },
+                            {
+                                "sourceField": "incentiveAmount",
+                                "targetField": "incentive_amount"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

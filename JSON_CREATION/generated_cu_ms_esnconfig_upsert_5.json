@@ -1,0 +1,205 @@
+{
+    "requestFields": [
+        "engine_serial_num",
+        "engine_name_desc",
+        "design_config_num",
+        "build_date",
+        "build_year",
+        "cpl_num",
+        "emissions_family_code",
+        "emission_year",
+        "emission_fr_option",
+        "service_engine_model",
+        "emission_ap_option",
+        "tl_spec_num",
+        "tl_spec_desc"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "ExistingESNConfigRecords",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "cu_esn_bom_option_config_notes",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "design_config_num",
+                    "rightSource": "Request.design_config_num"
+                },
+                {
+                    "leftField": "engine_serial_num",
+                    "rightSource": "Request.engine_serial_num"
+                }
+            ],
+            "produces": [
+                "uuid"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "ESNConfigurationUpsert",
+            "consumes": [
+                "Request",
+                "ExistingESNConfigRecords"
+            ],
+            "steps": [],
+            "conditions": [
+                {
+                    "condition": "design_config_num is null OR engine_serial_num is null",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No records exist for ExistingESNConfigRecords",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "cu_esn_bom_option_config_notes",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.engine_serial_num",
+                                "targetField": "engine_serial_num"
+                            },
+                            {
+                                "sourceField": "Request.engine_name_desc",
+                                "targetField": "engine_name_desc"
+                            },
+                            {
+                                "sourceField": "Request.design_config_num",
+                                "targetField": "design_config_num"
+                            },
+                            {
+                                "sourceField": "Request.build_date",
+                                "targetField": "build_date"
+                            },
+                            {
+                                "sourceField": "Request.build_year",
+                                "targetField": "build_year"
+                            },
+                            {
+                                "sourceField": "Request.cpl_num",
+                                "targetField": "cpl_num"
+                            },
+                            {
+                                "sourceField": "Request.emissions_family_code",
+                                "targetField": "emissions_family_code"
+                            },
+                            {
+                                "sourceField": "Request.emission_year",
+                                "targetField": "emission_year"
+                            },
+                            {
+                                "sourceField": "Request.emission_fr_option",
+                                "targetField": "emission_fr_option"
+                            },
+                            {
+                                "sourceField": "Request.service_engine_model",
+                                "targetField": "service_engine_model"
+                            },
+                            {
+                                "sourceField": "Request.emission_ap_option",
+                                "targetField": "emission_ap_option"
+                            },
+                            {
+                                "sourceField": "Request.tl_spec_num",
+                                "targetField": "tl_spec_num"
+                            },
+                            {
+                                "sourceField": "Request.tl_spec_desc",
+                                "targetField": "tl_spec_desc"
+                            },
+                            {
+                                "sourceField": "commercial_exit",
+                                "targetField": "created_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "Records exist for ExistingESNConfigRecords AND uuid is not null",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "cu_esn_bom_option_config_notes",
+                        "targetRecord": {
+                            "uuid": "${ExistingESNConfigRecords.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.engine_serial_num",
+                                "targetField": "engine_serial_num"
+                            },
+                            {
+                                "sourceField": "Request.engine_name_desc",
+                                "targetField": "engine_name_desc"
+                            },
+                            {
+                                "sourceField": "Request.design_config_num",
+                                "targetField": "design_config_num"
+                            },
+                            {
+                                "sourceField": "Request.build_date",
+                                "targetField": "build_date"
+                            },
+                            {
+                                "sourceField": "Request.build_year",
+                                "targetField": "build_year"
+                            },
+                            {
+                                "sourceField": "Request.cpl_num",
+                                "targetField": "cpl_num"
+                            },
+                            {
+                                "sourceField": "Request.emissions_family_code",
+                                "targetField": "emissions_family_code"
+                            },
+                            {
+                                "sourceField": "Request.emission_year",
+                                "targetField": "emission_year"
+                            },
+                            {
+                                "sourceField": "Request.emission_fr_option",
+                                "targetField": "emission_fr_option"
+                            },
+                            {
+                                "sourceField": "Request.service_engine_model",
+                                "targetField": "service_engine_model"
+                            },
+                            {
+                                "sourceField": "Request.emission_ap_option",
+                                "targetField": "emission_ap_option"
+                            },
+                            {
+                                "sourceField": "Request.tl_spec_num",
+                                "targetField": "tl_spec_num"
+                            },
+                            {
+                                "sourceField": "Request.tl_spec_desc",
+                                "targetField": "tl_spec_desc"
+                            },
+                            {
+                                "sourceField": "commercial_exit",
+                                "targetField": "updated_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,141 @@
+{
+  "requestFields": [
+    "top3_design_configs",
+    "top1_design_config",
+    "top2_design_config",
+    "top3_design_config",
+    "uuid"
+  ],
+  "dbCalls": [
+    {
+      "id": 1,
+      "name": "ConfigurationData",
+      "consumes": [
+        "Request"
+      ],
+      "entity": "configuration",
+      "streaming": true,
+      "dynamicJoinModel": null,
+      "joins": [
+        {
+          "leftField": "code",
+          "rightSource": "Request.top3_design_configs"
+        }
+      ],
+      "produces": [
+        "code",
+        "engine_model",
+        "displacement_liters",
+        "certification_level",
+        "market_application",
+        "engine_type",
+        "fuel_system_type"
+      ]
+    }
+  ],
+  "calculations": [
+    {
+      "name": "Criteria2Evaluation",
+      "consumes": [
+        "Request",
+        "ConfigurationData"
+      ],
+      "steps": [
+        {
+          "description": "Fetch configuration details for top1_design_config, top2_design_config and top3_design_config"
+        },
+        {
+          "description": "Map configuration data by design_config_num"
+        },
+        {
+          "description": "Retrieve configuration records for top1, top2 and top3 design configurations"
+        },
+        {
+          "description": "Compare engine_model values across top1, top2 and top3 configurations"
+        },
+        {
+          "description": "Calculate diff12 = ABS(top1.displacement_liters - top2.displacement_liters)"
+        },
+        {
+          "description": "Calculate diff23 = ABS(top2.displacement_liters - top3.displacement_liters)"
+        },
+        {
+          "description": "Determine sameEngineModel = top1.engine_model = top2.engine_model = top3.engine_model"
+        }
+      ],
+      "conditions": [
+        {
+          "condition": "No design configurations provided",
+          "output": {
+            "operation": "RETURN",
+            "entity": "",
+            "targetRecord": {},
+            "fieldMappings": []
+          }
+        },
+        {
+          "condition": "Less than 3 configuration records found",
+          "output": {
+            "operation": "TRIGGER_SERVICE",
+            "entity": "cu_ms_select_design_config_part_update_criteria3",
+            "targetRecord": {},
+            "fieldMappings": []
+          }
+        },
+        {
+          "condition": "sameEngineModel = true AND diff12 < 4 AND diff23 < 4",
+          "output": {
+            "operation": "UPDATE",
+            "entity": "part",
+            "targetRecord": {
+              "uuid": "${Request.uuid}"
+            },
+            "fieldMappings": [
+              {
+                "sourceField": "top1.engine_model",
+                "targetField": "engine_model"
+              },
+              {
+                "sourceField": "top1.displacement_liters",
+                "targetField": "displacement_liters"
+              },
+              {
+                "sourceField": "top1.certification_level",
+                "targetField": "certification_level"
+              },
+              {
+                "sourceField": "top1.market_application",
+                "targetField": "market_application"
+              },
+              {
+                "sourceField": "top1.engine_type",
+                "targetField": "engine_type"
+              },
+              {
+                "sourceField": "top1.fuel_system_type",
+                "targetField": "fuel_system_type"
+              },
+              {
+                "sourceField": "CLASS_NAME",
+                "targetField": "updated_by"
+              },
+              {
+                "sourceField": "CURRENT_TIMESTAMP",
+                "targetField": "updated_date"
+              }
+            ]
+          }
+        },
+        {
+          "condition": "sameEngineModel = false OR diff12 >= 4 OR diff23 >= 4",
+          "output": {
+            "operation": "TRIGGER_SERVICE",
+            "entity": "cu_ms_select_design_config_part_update_criteria3",
+            "targetRecord": {},
+            "fieldMappings": []
+          }
+        }
+      ]
+    }
+  ]
+}

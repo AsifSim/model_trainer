@@ -1,0 +1,207 @@
+{
+    "requestFields": [
+        "pricing_admin_owner",
+        "name",
+        "uuid"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "PricingAdminOwnerData",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "xpricing_admin_owner",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "code",
+                    "rightSource": "Request.pricing_admin_owner"
+                }
+            ],
+            "produces": [
+                "id"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "PartNounNameECCXrefByOwner",
+            "consumes": [
+                "Request",
+                "PricingAdminOwnerData"
+            ],
+            "entity": "part_noun_name_ecc_xref",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "name",
+                    "rightSource": "Request.name"
+                },
+                {
+                    "leftField": "pricing_admin_owner",
+                    "rightSource": "PricingAdminOwnerData.id"
+                }
+            ],
+            "produces": [
+                "ecc"
+            ]
+        },
+        {
+            "id": 3,
+            "name": "PartNounNameECCXrefByName",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "part_noun_name_ecc_xref",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "name",
+                    "rightSource": "Request.name"
+                }
+            ],
+            "produces": [
+                "ecc"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "ECCResolution",
+            "consumes": [
+                "Request",
+                "PricingAdminOwnerData",
+                "PartNounNameECCXrefByOwner",
+                "PartNounNameECCXrefByName"
+            ],
+            "steps": [],
+            "conditions": [
+                {
+                    "condition": "No records exist for PricingAdminOwnerData",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "Exactly one record exists for PartNounNameECCXrefByOwner AND ecc is not null",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "part",
+                        "targetRecord": {
+                            "uuid": "${Request.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "PartNounNameECCXrefByOwner.ecc",
+                                "targetField": "ecc"
+                            },
+                            {
+                                "sourceField": "CLASS_NAME",
+                                "targetField": "updated_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "Exactly one record exists for PartNounNameECCXrefByOwner AND ecc is null",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "Exactly one record exists for PartNounNameECCXrefByName AND ecc is not null",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "part",
+                        "targetRecord": {
+                            "uuid": "${Request.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "PartNounNameECCXrefByName.ecc",
+                                "targetField": "ecc"
+                            },
+                            {
+                                "sourceField": "CLASS_NAME",
+                                "targetField": "updated_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "Exactly one record exists for PartNounNameECCXrefByName AND ecc is null",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "More than one record exists for PartNounNameECCXrefByName",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No qualifying ECC record found",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "part_noun_name_ecc_xref",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "PricingAdminOwnerData.id",
+                                "targetField": "pricing_admin_owner"
+                            },
+                            {
+                                "sourceField": "Request.name",
+                                "targetField": "name"
+                            },
+                            {
+                                "sourceField": "null",
+                                "targetField": "ecc"
+                            },
+                            {
+                                "sourceField": "CLASS_NAME",
+                                "targetField": "updated_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            },
+                            {
+                                "sourceField": "CLASS_NAME",
+                                "targetField": "created_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

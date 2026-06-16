@@ -1,0 +1,177 @@
+{
+    "requestFields": [
+        "product_code"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "PricingTransactions",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "pricing_transaction",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "product_code",
+                    "rightSource": "Request.product_code"
+                }
+            ],
+            "produces": [
+                "customer_type",
+                "selling_price",
+                "quantity_sold"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "CustomerPricingGuidance",
+            "consumes": [
+                "PricingTransactions"
+            ],
+            "entity": "customer_pricing_guidance",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "customer_type",
+                    "rightSource": "selectedCustomerType"
+                }
+            ],
+            "produces": [
+                "uuid"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "CustomerTypeRevenueAnalysis",
+            "consumes": [
+                "Request",
+                "PricingTransactions"
+            ],
+            "steps": [
+                {
+                    "description": "Group PricingTransactions by customer_type"
+                },
+                {
+                    "description": "Calculate totalRevenue = SUM(selling_price * quantity_sold) per customer_type"
+                },
+                {
+                    "description": "Calculate totalQuantity = SUM(quantity_sold) per customer_type"
+                },
+                {
+                    "description": "Ignore customer_type groups where totalQuantity < 50"
+                },
+                {
+                    "description": "Calculate averageSellingPrice = totalRevenue / totalQuantity"
+                },
+                {
+                    "description": "Select customer_type with highest averageSellingPrice"
+                },
+                {
+                    "description": "Store selectedCustomerType, selectedAveragePrice and selectedRevenue"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "No records exist for PricingTransactions",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No customer_type has totalQuantity >= 50",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                }
+            ]
+        },
+        {
+            "name": "PricingGuidanceEvaluation",
+            "consumes": [
+                "Request",
+                "PricingTransactions",
+                "CustomerPricingGuidance"
+            ],
+            "steps": [],
+            "conditions": [
+                {
+                    "condition": "No records exist for CustomerPricingGuidance",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "selectedAveragePrice > 500",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "customer_pricing_guidance",
+                        "targetRecord": {
+                            "uuid": "${CustomerPricingGuidance.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "selectedCustomerType",
+                                "targetField": "selected_customer_type"
+                            },
+                            {
+                                "sourceField": "selectedAveragePrice",
+                                "targetField": "average_selling_price"
+                            },
+                            {
+                                "sourceField": "selectedRevenue",
+                                "targetField": "total_revenue"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "selectedAveragePrice <= 500",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "pricing_optimization",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.product_code",
+                                "targetField": "product_code"
+                            },
+                            {
+                                "sourceField": "selectedCustomerType",
+                                "targetField": "customer_type"
+                            },
+                            {
+                                "sourceField": "selectedAveragePrice",
+                                "targetField": "average_selling_price"
+                            },
+                            {
+                                "sourceField": "selectedRevenue",
+                                "targetField": "total_revenue"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

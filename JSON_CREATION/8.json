@@ -1,0 +1,189 @@
+{
+    "requestFields": [
+        "product_code"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "SalesTransactions",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "sales_transaction",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "product_code",
+                    "rightSource": "Request.product_code"
+                }
+            ],
+            "produces": [
+                "configuration_code",
+                "selling_price"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "PricingConfiguration",
+            "consumes": [
+                "SalesTransactions"
+            ],
+            "entity": "pricing_configuration",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "configuration_code",
+                    "rightSource": "selectedConfiguration"
+                }
+            ],
+            "produces": [
+                "uuid"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "ConfigurationPricingAnalysis",
+            "consumes": [
+                "Request",
+                "SalesTransactions"
+            ],
+            "steps": [
+                {
+                    "description": "Group SalesTransactions by configuration_code"
+                },
+                {
+                    "description": "Calculate totalPrice = SUM(selling_price) per configuration_code"
+                },
+                {
+                    "description": "Calculate transactionCount = COUNT(*) per configuration_code"
+                },
+                {
+                    "description": "Calculate maxPrice = MAX(selling_price) per configuration_code"
+                },
+                {
+                    "description": "Calculate minPrice = MIN(selling_price) per configuration_code"
+                },
+                {
+                    "description": "Calculate averagePrice = totalPrice / transactionCount"
+                },
+                {
+                    "description": "Calculate variance = maxPrice - minPrice"
+                },
+                {
+                    "description": "Ignore configuration_code groups where variance > 100"
+                },
+                {
+                    "description": "Select configuration_code with highest averagePrice"
+                },
+                {
+                    "description": "Store selectedConfiguration, selectedAveragePrice and selectedVariance"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "No records exist for SalesTransactions",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No configuration_code qualifies after variance filtering",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                }
+            ]
+        },
+        {
+            "name": "PricingRecommendationEvaluation",
+            "consumes": [
+                "Request",
+                "SalesTransactions",
+                "PricingConfiguration"
+            ],
+            "steps": [],
+            "conditions": [
+                {
+                    "condition": "No records exist for PricingConfiguration",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "selectedAveragePrice > 1000",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "pricing_configuration",
+                        "targetRecord": {
+                            "uuid": "${PricingConfiguration.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "selectedAveragePrice",
+                                "targetField": "average_selling_price"
+                            },
+                            {
+                                "sourceField": "selectedVariance",
+                                "targetField": "price_variance"
+                            },
+                            {
+                                "sourceField": "PREMIUM",
+                                "targetField": "recommendation_status"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "selectedAveragePrice <= 1000",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "pricing_recommendation",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.product_code",
+                                "targetField": "product_code"
+                            },
+                            {
+                                "sourceField": "selectedConfiguration",
+                                "targetField": "selected_configuration"
+                            },
+                            {
+                                "sourceField": "selectedAveragePrice",
+                                "targetField": "average_selling_price"
+                            },
+                            {
+                                "sourceField": "selectedVariance",
+                                "targetField": "price_variance"
+                            },
+                            {
+                                "sourceField": "STANDARD",
+                                "targetField": "recommendation_status"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

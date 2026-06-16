@@ -1,0 +1,227 @@
+{
+    "requestFields": [
+        "top1_design_config",
+        "top2_design_config",
+        "top3_design_config",
+        "uuid"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "TopConfigLast10YearsCount",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "cu_esn_bom_option_config_notes",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "design_config_num",
+                    "rightSource": "top1_design_config | top2_design_config | top3_design_config"
+                },
+                {
+                    "leftField": "build_year",
+                    "rightSource": "CURRENT_YEAR - 10"
+                }
+            ],
+            "produces": [
+                "count"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "TopConfigLast5YearsCount",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "cu_esn_bom_option_config_notes",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "design_config_num",
+                    "rightSource": "top1_design_config | top2_design_config | top3_design_config"
+                },
+                {
+                    "leftField": "build_year",
+                    "rightSource": "CURRENT_YEAR - 5"
+                }
+            ],
+            "produces": [
+                "count"
+            ]
+        },
+        {
+            "id": 3,
+            "name": "TopConfigFiveToTenYearCount",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "cu_esn_bom_option_config_notes",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "design_config_num",
+                    "rightSource": "top1_design_config | top2_design_config | top3_design_config"
+                },
+                {
+                    "leftField": "from_year",
+                    "rightSource": "CURRENT_YEAR - 10"
+                },
+                {
+                    "leftField": "to_year",
+                    "rightSource": "CURRENT_YEAR - 5"
+                }
+            ],
+            "produces": [
+                "count"
+            ]
+        },
+        {
+            "id": 4,
+            "name": "SelectedConfiguration",
+            "consumes": [
+                "Criteria3Selection"
+            ],
+            "entity": "configuration",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "code",
+                    "rightSource": "selectedConfig"
+                }
+            ],
+            "produces": [
+                "engine_model",
+                "displacement_liters",
+                "certification_level",
+                "market_application",
+                "engine_type",
+                "fuel_system_type"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "Criteria3Selection",
+            "consumes": [
+                "Request",
+                "TopConfigLast10YearsCount",
+                "TopConfigLast5YearsCount",
+                "TopConfigFiveToTenYearCount"
+            ],
+            "steps": [
+                {
+                    "description": "Evaluate top1_design_config, top2_design_config and top3_design_config individually"
+                },
+                {
+                    "description": "Determine if at least one configuration has count_last_10_years > 0"
+                },
+                {
+                    "description": "For each configuration compare count_last_5_years with count_between_5_and_10_years"
+                },
+                {
+                    "description": "Keep only configurations where count_last_5_years > count_between_5_and_10_years"
+                },
+                {
+                    "description": "Select configuration with highest count_last_5_years"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "No design configurations provided",
+                    "output": {
+                        "operation": "TRIGGER_SERVICE",
+                        "entity": "wind_chill",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No configuration has count_last_10_years > 0",
+                    "output": {
+                        "operation": "TRIGGER_SERVICE",
+                        "entity": "wind_chill",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No configuration satisfies count_last_5_years > count_between_5_and_10_years",
+                    "output": {
+                        "operation": "TRIGGER_SERVICE",
+                        "entity": "wind_chill",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                }
+            ]
+        },
+        {
+            "name": "UpdatePartFromSelectedConfiguration",
+            "consumes": [
+                "Request",
+                "SelectedConfiguration"
+            ],
+            "steps": [],
+            "conditions": [
+                {
+                    "condition": "No records exist for SelectedConfiguration",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "Selected configuration found",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "part",
+                        "targetRecord": {
+                            "uuid": "${Request.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "SelectedConfiguration.engine_model",
+                                "targetField": "engine_model"
+                            },
+                            {
+                                "sourceField": "SelectedConfiguration.displacement_liters",
+                                "targetField": "displacement_liters"
+                            },
+                            {
+                                "sourceField": "SelectedConfiguration.certification_level",
+                                "targetField": "certification_level"
+                            },
+                            {
+                                "sourceField": "SelectedConfiguration.market_application",
+                                "targetField": "market_application"
+                            },
+                            {
+                                "sourceField": "SelectedConfiguration.engine_type",
+                                "targetField": "engine_type"
+                            },
+                            {
+                                "sourceField": "SelectedConfiguration.fuel_system_type",
+                                "targetField": "fuel_system_type"
+                            },
+                            {
+                                "sourceField": "CLASS_NAME",
+                                "targetField": "updated_by"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

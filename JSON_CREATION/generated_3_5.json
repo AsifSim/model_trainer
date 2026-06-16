@@ -1,0 +1,142 @@
+{
+    "requestFields": [
+        "vehicle_id"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "VehicleData",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "vehicle",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "vehicle_id",
+                    "rightSource": "Request.vehicle_id"
+                }
+            ],
+            "produces": [
+                "vehicle_type",
+                "mileage",
+                "service_plan"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "MaintenanceRule",
+            "consumes": [
+                "VehicleData"
+            ],
+            "entity": "maintenance_rule",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "vehicle_type",
+                    "rightSource": "VehicleData.vehicle_type"
+                },
+                {
+                    "leftField": "service_plan",
+                    "rightSource": "VehicleData.service_plan"
+                }
+            ],
+            "produces": [
+                "service_interval",
+                "maintenance_category",
+                "uuid"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "MaintenanceForecastCalculation",
+            "consumes": [
+                "Request",
+                "VehicleData",
+                "MaintenanceRule"
+            ],
+            "steps": [
+                {
+                    "description": "Calculate remainingServiceDistance = MaintenanceRule.service_interval - VehicleData.mileage"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "No records exist for VehicleData",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No records exist for MaintenanceRule",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "remainingServiceDistance <= 1000",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "maintenance_rule",
+                        "targetRecord": {
+                            "uuid": "${MaintenanceRule.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "VehicleData.mileage",
+                                "targetField": "current_mileage"
+                            },
+                            {
+                                "sourceField": "MaintenanceRule.maintenance_category",
+                                "targetField": "maintenance_category"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "remainingServiceDistance > 1000",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "maintenance_forecast",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.vehicle_id",
+                                "targetField": "vehicle_id"
+                            },
+                            {
+                                "sourceField": "VehicleData.vehicle_type",
+                                "targetField": "vehicle_type"
+                            },
+                            {
+                                "sourceField": "VehicleData.service_plan",
+                                "targetField": "service_plan"
+                            },
+                            {
+                                "sourceField": "remainingServiceDistance",
+                                "targetField": "remaining_service_distance"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}

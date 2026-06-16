@@ -1,0 +1,195 @@
+{
+    "requestFields": [
+        "product_code"
+    ],
+    "dbCalls": [
+        {
+            "id": 1,
+            "name": "MarketSales",
+            "consumes": [
+                "Request"
+            ],
+            "entity": "sales_transaction",
+            "streaming": true,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "product_code",
+                    "rightSource": "Request.product_code"
+                }
+            ],
+            "produces": [
+                "market_code",
+                "revenue",
+                "quantity_sold",
+                "cost"
+            ]
+        },
+        {
+            "id": 2,
+            "name": "MarketPricingStrategy",
+            "consumes": [
+                "MarketSales"
+            ],
+            "entity": "market_pricing_strategy",
+            "streaming": false,
+            "dynamicJoinModel": null,
+            "joins": [
+                {
+                    "leftField": "market_code",
+                    "rightSource": "selectedMarket"
+                }
+            ],
+            "produces": [
+                "uuid"
+            ]
+        }
+    ],
+    "calculations": [
+        {
+            "name": "MarketProfitabilityAnalysis",
+            "consumes": [
+                "Request",
+                "MarketSales"
+            ],
+            "steps": [
+                {
+                    "description": "Group MarketSales by market_code"
+                },
+                {
+                    "description": "Calculate totalRevenue = SUM(revenue) per market_code"
+                },
+                {
+                    "description": "Calculate totalQuantity = SUM(quantity_sold) per market_code"
+                },
+                {
+                    "description": "Calculate totalCost = SUM(cost) per market_code"
+                },
+                {
+                    "description": "Calculate profit = totalRevenue - totalCost"
+                },
+                {
+                    "description": "Calculate marginPercentage = (profit / totalRevenue) * 100"
+                },
+                {
+                    "description": "Ignore market_code groups where marginPercentage < 10"
+                },
+                {
+                    "description": "Select market_code with highest marginPercentage"
+                },
+                {
+                    "description": "If marginPercentage is tied, select market_code with highest totalRevenue"
+                },
+                {
+                    "description": "Store selectedMarket, selectedRevenue and selectedMargin"
+                }
+            ],
+            "conditions": [
+                {
+                    "condition": "No records exist for MarketSales",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "No market_code qualifies after marginPercentage filtering",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                }
+            ]
+        },
+        {
+            "name": "MarketStrategyEvaluation",
+            "consumes": [
+                "Request",
+                "MarketSales",
+                "MarketPricingStrategy"
+            ],
+            "steps": [],
+            "conditions": [
+                {
+                    "condition": "No records exist for MarketPricingStrategy",
+                    "output": {
+                        "operation": "RETURN",
+                        "entity": "",
+                        "targetRecord": {},
+                        "fieldMappings": []
+                    }
+                },
+                {
+                    "condition": "selectedMargin > 25",
+                    "output": {
+                        "operation": "UPDATE",
+                        "entity": "market_pricing_strategy",
+                        "targetRecord": {
+                            "uuid": "${MarketPricingStrategy.uuid}"
+                        },
+                        "fieldMappings": [
+                            {
+                                "sourceField": "selectedMarket",
+                                "targetField": "selected_market"
+                            },
+                            {
+                                "sourceField": "selectedMargin",
+                                "targetField": "profit_margin_percentage"
+                            },
+                            {
+                                "sourceField": "selectedRevenue",
+                                "targetField": "total_revenue"
+                            },
+                            {
+                                "sourceField": "PRICE_INCREASE",
+                                "targetField": "recommendation"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "updated_date"
+                            }
+                        ]
+                    }
+                },
+                {
+                    "condition": "selectedMargin <= 25",
+                    "output": {
+                        "operation": "INSERT",
+                        "entity": "market_pricing_opportunity",
+                        "targetRecord": {},
+                        "fieldMappings": [
+                            {
+                                "sourceField": "Request.product_code",
+                                "targetField": "product_code"
+                            },
+                            {
+                                "sourceField": "selectedMarket",
+                                "targetField": "selected_market"
+                            },
+                            {
+                                "sourceField": "selectedMargin",
+                                "targetField": "profit_margin_percentage"
+                            },
+                            {
+                                "sourceField": "selectedRevenue",
+                                "targetField": "total_revenue"
+                            },
+                            {
+                                "sourceField": "MONITOR",
+                                "targetField": "recommendation"
+                            },
+                            {
+                                "sourceField": "CURRENT_TIMESTAMP",
+                                "targetField": "created_date"
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    ]
+}
