@@ -1,0 +1,538 @@
+{
+  "microservices_orchestration_manifest": [
+    {
+      "microservice_name": "cu_ms_ecc_auto_seg",
+      "service_version": "v1",
+      "is_platform_triggered": true,
+      "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+      "associated_workflow": "cu_wf_rer_engine_attributes_update",
+      "request_data_extractions": [
+        {
+          "field_name": "part_number",
+          "data_type": "String",
+          "extraction_path": "String part_number = (String) data.getRequestData().get(\"part_number\");",
+          "purpose": "Extracted component identifier used for global trade monitoring across supply chain logistics."
+        },
+        {
+          "field_name": "pricing_admin_owner",
+          "data_type": "String",
+          "extraction_path": "String pricing_admin_owner = (String) data.getRequestData().get(\"pricing_admin_owner\");",
+          "purpose": "Extracted external organization admin label used to resolve internal surrogate ownership keys."
+        },
+        {
+          "field_name": "name",
+          "data_type": "String",
+          "extraction_path": "String name = (String) data.getRequestData().get(\"name\");",
+          "purpose": "Extracted catalog part noun terminology string used to evaluate compliance classification records."
+        },
+        {
+          "field_name": "uuid",
+          "data_type": "String",
+          "extraction_path": "String uuid = (String) data.getRequestData().get(\"uuid\");",
+          "purpose": "Extracted internal primary index handle pointing to the specific inventory records target row."
+        }
+      ],
+      "workflow_steps": [
+        {
+          "step_number": 1,
+          "type": "DATABASE_STREAM",
+          "target_entity": "xpricing_admin_owner",
+          "filter_name": "byPricingAdminOwnerCode",
+          "where_clause_parameters": ["code"],
+          "columns_to_fetch": ["id"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams1 = com.google.common.collect.ArrayListMultimap.create(); queryParams1.put(\"code\", pricing_admin_owner); context.streamDataFromDB(\"xpricing_admin_owner\", \"byPricingAdminOwnerCode\", queryParams1, record -> { ownerIdHolder[0] = Integer.parseInt(String.valueOf(record.get(\"id\"))); });",
+          "purpose": "Resolve corporate administrative string owner tokens into master table database unique indexes."
+        },
+        {
+          "step_number": 2,
+          "type": "DATABASE_STREAM",
+          "target_entity": "part_noun_name_ecc_xref",
+          "filter_name": "byNameAndPricingAdminOwner",
+          "where_clause_parameters": ["name", "pricing_admin_owner"],
+          "columns_to_fetch": ["uuid", "ecc", "name", "pricing_admin_owner"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams2 = com.google.common.collect.ArrayListMultimap.create(); queryParams2.put(\"name\", name); queryParams2.put(\"pricing_admin_owner\", ownerIdHolder[0]); context.streamDataFromDB(\"part_noun_name_ecc_xref\", \"byNameAndPricingAdminOwner\", queryParams2, record -> { strictXrefRecordsList.add(record); });",
+          "purpose": "Evaluate explicit legal metrics matching both the component string name and mapped inner group owner key."
+        },
+        {
+          "step_number": 3,
+          "type": "DATABASE_STREAM",
+          "target_entity": "part_noun_name_ecc_xref",
+          "filter_name": "byPartNameOnly",
+          "where_clause_parameters": ["name"],
+          "columns_to_fetch": ["uuid", "ecc", "name", "pricing_admin_owner"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams3 = com.google.common.collect.ArrayListMultimap.create(); queryParams3.put(\"name\", name); context.streamDataFromDB(\"part_noun_name_ecc_xref\", \"byPartNameOnly\", queryParams3, record -> { fallbackXrefRecordsList.add(record); });",
+          "purpose": "Query cross-reference data utilizing a secondary name-only logic track when owner alignments are disjoint."
+        }
+      ],
+      "conditional_routing": [
+        {
+          "condition": "exactly one row returned in strict lookup filter and embedded classification code contains populated data",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "part",
+              "operation": "update",
+              "source_of_uuid": "Request.uuid",
+              "fields": {
+                "ecc": "PartNounNameECCXref.ecc"
+              }
+            }
+          ]
+        },
+        {
+          "condition": "zero items isolated in strict lookup and exactly one row exists inside name-only lookup containing clear classification entries",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "part",
+              "operation": "update",
+              "source_of_uuid": "Request.uuid",
+              "fields": {
+                "ecc": "PartNounNameECCXrefByName.ecc"
+              }
+            }
+          ]
+        },
+        {
+          "condition": "no matching rows discovered across either strict cross-reference parameters or component name filters",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "part_noun_name_ecc_xref",
+              "operation": "insert",
+              "source_of_uuid": "AUTO_GENERATED",
+              "fields": {
+                "pricing_admin_owner": "PricingAdminOwnerData.id",
+                "name": "Request.name",
+                "ecc": "NULL"
+              }
+            }
+          ]
+        }
+      ],
+      "test_specification_matrix": {
+        "mock_dependencies": [
+          {
+            "step_reference": 1,
+            "mock_target": "DATABASE_STREAM:xpricing_admin_owner",
+            "mock_outputs": { "standard_profile": { "id": 4040 } }
+          },
+          {
+            "step_reference": 2,
+            "mock_target": "DATABASE_STREAM:part_noun_name_ecc_xref_strict",
+            "mock_outputs": {
+              "found": [{ "uuid": "x-id-1", "ecc": "5A002", "name": "CONTROLLER", "pricing_admin_owner": 4040 }],
+              "empty": []
+            }
+          },
+          {
+            "step_reference": 3,
+            "mock_target": "DATABASE_STREAM:part_noun_name_ecc_xref_name",
+            "mock_outputs": {
+              "found_fallback": [{ "uuid": "x-id-2", "ecc": "EAR99", "name": "CONTROLLER", "pricing_admin_owner": 5050 }],
+              "ambiguous_rows": [
+                { "uuid": "x-id-3", "ecc": "1A001", "name": "CONTROLLER", "pricing_admin_owner": 8080 },
+                { "uuid": "x-id-4", "ecc": "2B001", "name": "CONTROLLER", "pricing_admin_owner": 9090 }
+              ]
+            }
+          }
+        ],
+        "scenarios": [
+          {
+            "scenario_id": "TC_001_STRICT_ROW_MATCH_ROUTE",
+            "given_request_data": { "part_number": "P-MOD-01", "pricing_admin_owner": "ADM-US", "name": "CONTROLLER", "uuid": "part-u-101" },
+            "simulated_profiles": ["standard_profile", "found", "empty"],
+            "assertions": {
+              "persistence_verifications": [
+                { "target_entity": "part", "expected_operation": "update", "expected_fields": { "uuid": "part-u-101", "ecc": "5A002" } }
+              ]
+            }
+          },
+          {
+            "scenario_id": "TC_002_FALLBACK_ROW_MATCH_ROUTE",
+            "given_request_data": { "part_number": "P-MOD-01", "pricing_admin_owner": "ADM-US", "name": "CONTROLLER", "uuid": "part-u-101" },
+            "simulated_profiles": ["standard_profile", "empty", "found_fallback"],
+            "assertions": {
+              "persistence_verifications": [
+                { "target_entity": "part", "expected_operation": "update", "expected_fields": { "uuid": "part-u-101", "ecc": "EAR99" } }
+              ]
+            }
+          },
+          {
+            "scenario_id": "TC_003_AMBIGUOUS_CONFLICT_FAIL_SAFE",
+            "given_request_data": { "part_number": "P-MOD-01", "pricing_admin_owner": "ADM-US", "name": "CONTROLLER", "uuid": "part-u-101" },
+            "simulated_profiles": ["standard_profile", "empty", "ambiguous_rows"],
+            "assertions": { "persistence_verifications": [] }
+          }
+        ]
+      }
+    },
+    {
+      "microservice_name": "cu_ms_esnconfig_part_update",
+      "service_version": "v1",
+      "is_platform_triggered": true,
+      "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+      "associated_workflow": "cu_wf_esnconfig_part_update",
+      "request_data_extractions": [
+        {
+          "field_name": "child_part",
+          "data_type": "String",
+          "extraction_path": "String child_part = (String) data.getRequestData().get(\"child_part\");",
+          "purpose": "Extracted subsystem child component key used to initiate option history lookups."
+        },
+        {
+          "field_name": "short_part_number",
+          "data_type": "String",
+          "extraction_path": "String short_part_number = (String) data.getRequestData().get(\"short_part_number\");",
+          "purpose": "Extracted core part number reference tracking target segment matrix updates."
+        }
+      ],
+      "workflow_steps": [
+        {
+          "step_number": 1,
+          "type": "MICROSERVICE_CALL",
+          "target_microservice": "PartEligibilityService",
+          "target_version": "v1",
+          "input_parameters": ["child_part"],
+          "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"child_part\")) { data.getRequestData().put(\"child_part\", child_part); }",
+          "data_dependencies": [
+            { "type": "REQUEST_DATA", "field_name": "child_part" }
+          ],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> partVerify = com.google.common.collect.ArrayListMultimap.create(); partVerify.put(\"short_part_number\", child_part); boolean isEligible = context.checkRecordExists(\"part\", partVerify); if(!isEligible) { throw new EligibilityException(\"Child part validation failed in master part entity registry.\"); }",
+          "purpose": "Enforce mandatory eligibility rules by verifying the child_part string exists within the master part database table before processing."
+        },
+        {
+          "step_number": 2,
+          "type": "DATABASE_STREAM",
+          "target_entity": "cu_wc_option_child",
+          "filter_name": "byChildPart",
+          "where_clause_parameters": ["child_part"],
+          "columns_to_fetch": ["rev_option_no"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> optionParams = com.google.common.collect.ArrayListMultimap.create(); optionParams.put(\"child_part\", child_part); context.streamDataFromDB(\"cu_wc_option_child\", \"byChildPart\", optionParams, record -> { optionRevList.add(String.valueOf(record.get(\"rev_option_no\"))); });",
+          "purpose": "Stream and collect all registered option revision numbers belonging to the designated component record."
+        },
+        {
+          "step_number": 3,
+          "type": "DATABASE_STREAM",
+          "target_entity": "cu_esn_bom_option_config",
+          "filter_name": "byOptionAssemblyNumbers",
+          "where_clause_parameters": ["option_assembly_num_list"],
+          "columns_to_fetch": ["engine_serial_num", "build_date"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> bomParams = com.google.common.collect.ArrayListMultimap.create(); bomParams.put(\"option_assembly_num\", optionRevList); context.streamDataFromDB(\"cu_esn_bom_option_config\", \"byOptionAssemblyNumbers\", bomParams, record -> { java.util.Date bDate = (java.util.Date) record.get(\"build_date\"); if(maxDate[0] == null || bDate.after(maxDate[0])) { maxDate[0] = bDate; } });",
+          "purpose": "Extract production histories mapping option revision keys to assembly configuration structures to determine latest build date targets."
+        },
+        {
+          "step_number": 4,
+          "type": "DATABASE_STREAM",
+          "target_entity": "cu_bom_config_vol",
+          "filter_name": "byExtractedBuildYear",
+          "where_clause_parameters": ["year"],
+          "columns_to_fetch": ["design_config_num", "esn_count"],
+          "code_snippet": "java.util.Calendar cal = java.util.Calendar.getInstance(); cal.setTime(maxDate[0]); int extractedYear = cal.get(java.util.Calendar.YEAR); extractedYearHolder[0] = extractedYear; com.google.common.collect.Multimap<String, Object> volParams = com.google.common.collect.ArrayListMultimap.create(); volParams.put(\"year\", extractedYear); context.streamDataFromDB(\"cu_bom_config_vol\", \"byExtractedBuildYear\", volParams, record -> { int currentCount = Integer.parseInt(String.valueOf(record.get(\"esn_count\"))); if(currentCount > maxEsnCount[0]) { maxEsnCount[0] = currentCount; selectedConfigNum[0] = String.valueOf(record.get(\"design_config_num\")); } });",
+          "purpose": "Query configuration data volumes using the year parameter parsed from the maximum assembly build date found."
+        }
+      ],
+      "conditional_routing": [
+        {
+          "condition": "eligibility criteria satisfied and production configurations successfully resolved",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "cu_part_segment",
+              "operation": "update_insert",
+              "source_of_uuid": "short_part_number",
+              "fields": {
+                "last_year_esn_produced": "extractedYearHolder[0]",
+                "latest_configuration": "selectedConfigNum[0]"
+              }
+            }
+          ]
+        }
+      ],
+      "test_specification_matrix": {
+        "mock_dependencies": [
+          {
+            "step_reference": 1,
+            "mock_target": "VALIDATE_RECORD_EXISTS:part",
+            "mock_outputs": { "eligible": true, "ineligible": false }
+          },
+          {
+            "step_reference": 2,
+            "mock_target": "DATABASE_STREAM:cu_wc_option_child",
+            "mock_outputs": { "standard_options": [{ "rev_option_no": "OPT-REV-200" }] }
+          },
+          {
+            "step_reference": 3,
+            "mock_target": "DATABASE_STREAM:cu_esn_bom_option_config",
+            "mock_outputs": { "production_dates": [{ "engine_serial_num": "ESN-9988", "build_date": "2026-02-20" }] }
+          },
+          {
+            "step_reference": 4,
+            "mock_target": "DATABASE_STREAM:cu_bom_config_vol",
+            "mock_outputs": { "volume_configurations": [{ "design_config_num": "CONFIG-OMEGA", "esn_count": 1280 }] }
+          }
+        ],
+        "scenarios": [
+          {
+            "scenario_id": "TC_001_SUCCESSFUL_UPSERT_ROUTING",
+            "given_request_data": { "child_part": "COMP-777", "short_part_number": "SPN-777" },
+            "simulated_profiles": ["eligible", "standard_options", "production_dates", "volume_configurations"],
+            "assertions": {
+              "persistence_verifications": [
+                {
+                  "target_entity": "cu_part_segment",
+                  "expected_operation": "update_insert",
+                  "expected_fields": {
+                    "short_part_number": "SPN-777",
+                    "last_year_esn_produced": 2026,
+                    "latest_configuration": "CONFIG-OMEGA"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "microservice_name": "cu_ms_esnconfig_upsert",
+      "service_version": "v1",
+      "is_platform_triggered": true,
+      "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+      "request_data_extractions": [
+        {
+          "field_name": "design_config_num",
+          "data_type": "String",
+          "extraction_path": "String design_config_num = (String) data.getRequestData().get(\"design_config_num\");",
+          "purpose": "Extracted design configuration blueprint key used to check the asset database for pre-existing configurations."
+        },
+        {
+          "field_name": "engine_serial_num",
+          "data_type": "String",
+          "extraction_path": "String engine_serial_num = (String) data.getRequestData().get(\"engine_serial_num\");",
+          "purpose": "Extracted unique manufacturing serial key utilized for tracking specific equipment assets."
+        }
+      ],
+      "workflow_steps": [
+        {
+          "step_number": 1,
+          "type": "DATABASE_STREAM",
+          "target_entity": "cu_esn_bom_option_config",
+          "filter_name": "byDesignConfigAndSerialNumber",
+          "where_clause_parameters": ["design_config_num", "engine_serial_num"],
+          "columns_to_fetch": ["uuid", "design_config_num", "engine_serial_num", "created_by", "updated_by"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> searchParams = com.google.common.collect.ArrayListMultimap.create(); searchParams.put(\"design_config_num\", design_config_num); searchParams.put(\"engine_serial_num\", engine_serial_num); context.streamDataFromDB(\"cu_esn_bom_option_config\", \"byDesignConfigAndSerialNumber\", searchParams, record -> { existingConfigRecords.add(record); });",
+          "purpose": "Query and stream existing technical records matching the combined design blueprint key and equipment serial parameters."
+        }
+      ],
+      "conditional_routing": [
+        {
+          "condition": "the database stream returns zero matching records for the specified design blueprint and serial number keys",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "cu_esn_bom_option_config",
+              "operation": "insert",
+              "source_of_uuid": "AUTO_GENERATED",
+              "fields": {
+                "design_config_num": "Request.design_config_num",
+                "engine_serial_num": "Request.engine_serial_num",
+                "created_by": "Commercial Exit",
+                "created_date": "CURRENT_OFFSET_DATE_TIME"
+              }
+            }
+          ]
+        },
+        {
+          "condition": "the database stream detects one or more matching records possessing a valid unique record tracking identifier",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "cu_esn_bom_option_config",
+              "operation": "update",
+              "source_of_uuid": "streamed_record_identifier",
+              "fields": {
+                "updated_by": "Commercial Exit",
+                "updated_date": "CURRENT_OFFSET_DATE_TIME"
+              }
+            }
+          ]
+        }
+      ],
+      "test_specification_matrix": {
+        "mock_dependencies": [
+          {
+            "step_reference": 1,
+            "mock_target": "DATABASE_STREAM:cu_esn_bom_option_config",
+            "mock_outputs": {
+              "empty_catalog": [],
+              "single_match": [{ "uuid": "row-id-4041", "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500" }]
+            }
+          }
+        ],
+        "scenarios": [
+          {
+            "scenario_id": "TC_001_ENGINE_RECORD_CREATION",
+            "given_request_data": { "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500" },
+            "simulated_profiles": ["empty_catalog"],
+            "assertions": {
+              "persistence_verifications": [
+                {
+                  "target_entity": "cu_esn_bom_option_config",
+                  "expected_operation": "insert",
+                  "expected_fields": {
+                    "design_config_num": "D-CFG-77",
+                    "engine_serial_num": "ESN-500",
+                    "created_by": "Commercial Exit"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "microservice_name": "cu_ms_rer_engine_attributes_update",
+      "service_version": "v1",
+      "is_platform_triggered": true,
+      "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+      "associated_workflow": "cu_wf_rer_engine_attributes_update",
+      "request_data_extractions": [
+        {
+          "field_name": "technical_configuration",
+          "data_type": "String",
+          "extraction_path": "String technical_configuration = (String) data.getRequestData().get(\"technical_configuration\");",
+          "purpose": "Extracted hardware technical setup code used for engine tracking updates."
+        },
+        {
+          "field_name": "marketing_configuration",
+          "data_type": "String",
+          "extraction_path": "String marketing_configuration = (String) data.getRequestData().get(\"marketing_configuration\");",
+          "purpose": "Extracted commercial package blueprint code used to pull master specifications."
+        },
+        {
+          "field_name": "fuel_rating_hp",
+          "data_type": "Double",
+          "extraction_path": "Double fuel_rating_hp = Double.parseDouble(String.valueOf(data.getRequestData().get(\"fuel_rating_hp\")));",
+          "purpose": "Extracted asset performance horsepower limit parameter."
+        }
+      ],
+      "workflow_steps": [
+        {
+          "step_number": 1,
+          "type": "DATABASE_STREAM",
+          "target_entity": "configuration",
+          "filter_name": "byMarketingConfigCode",
+          "where_clause_parameters": ["code"],
+          "columns_to_fetch": ["engine_model", "displacement_liters", "certification_level", "market_application", "engine_type"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> p1 = com.google.common.collect.ArrayListMultimap.create(); p1.put(\"code\", marketing_configuration); context.streamDataFromDB(\"configuration\", \"byMarketingConfigCode\", p1, record -> { engineModel = String.valueOf(record.get(\"engine_model\")); displacementLiters = Double.parseDouble(String.valueOf(record.get(\"displacement_liters\"))); certLevel = String.valueOf(record.get(\"certification_level\")); marketApp = String.valueOf(record.get(\"market_application\")); engineType = String.valueOf(record.get(\"engine_type\")); });",
+          "purpose": "Resolve descriptive model configurations from the overarching master blueprint library code."
+        },
+        {
+          "step_number": 2,
+          "type": "DATABASE_STREAM",
+          "target_entity": "cu_suggested_prices_rer_engine",
+          "filter_name": "byEngineAttributes",
+          "where_clause_parameters": ["engine_model", "displacement_liters", "certification_level", "market_application", "engine_type", "fuel_rating_hp"],
+          "columns_to_fetch": ["pricing_method", "pricing_method_value"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> p2 = com.google.common.collect.ArrayListMultimap.create(); p2.put(\"engine_model\", engineModel); p2.put(\"fuel_rating_hp\", fuel_rating_hp); context.streamDataFromDB(\"cu_suggested_prices_rer_engine\", \"byEngineAttributes\", p2, record -> { priceMethod = String.valueOf(record.get(\"pricing_method\")); priceMethodValue = Double.parseDouble(String.valueOf(record.get(\"pricing_method_value\"))); });",
+          "purpose": "Locate price optimization formulas matched against detailed engineering profile dimensions."
+        },
+        {
+          "step_number": 3,
+          "type": "DATABASE_STREAM",
+          "target_entity": "cu_rer_engine_pricing",
+          "filter_name": "byPricingCompositeKey",
+          "where_clause_parameters": ["technical_configuration", "marketing_configuration", "fuel_rating_hp"],
+          "columns_to_fetch": ["current_price", "publish_price", "pricing_action"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> p3 = com.google.common.collect.ArrayListMultimap.create(); p3.put(\"technical_configuration\", technical_configuration); context.streamDataFromDB(\"cu_rer_engine_pricing\", \"byPricingCompositeKey\", p3, record -> { currentPrice = Double.parseDouble(String.valueOf(record.get(\"current_price\"))); publishPrice = record.get(\"publish_price\") != null ? Double.parseDouble(String.valueOf(record.get(\"publish_price\"))) : null; pricingAction = record.get(\"pricing_action\") != null ? String.valueOf(record.get(\"pricing_action\")) : null; });",
+          "purpose": "Query previous prices and active regulatory statuses assigned to the engine setup."
+        },
+        {
+          "step_number": 4,
+          "type": "DATABASE_STREAM",
+          "target_entity": "p_pricing_action",
+          "filter_name": "byNoneCode",
+          "where_clause_parameters": ["code"],
+          "columns_to_fetch": ["id"],
+          "code_snippet": "com.google.common.collect.Multimap<String, Object> p4 = com.google.common.collect.ArrayListMultimap.create(); p4.put(\"code\", \"None\"); context.streamDataFromDB(\"p_pricing_action\", \"byNoneCode\", p4, record -> { fallbackActionId = Integer.parseInt(String.valueOf(record.get(\"id\"))); });",
+          "purpose": "Fetch the unique internal backup ID corresponding to standard 'None' auditing designations."
+        }
+      ],
+      "conditional_routing": [
+        {
+          "condition": "system specifications processed and modeling pricing formulas successfully parsed",
+          "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+          "target_version": "v1",
+          "persistence_actions": [
+            {
+              "entity": "cu_rer_engine_pricing",
+              "operation": "update",
+              "source_of_uuid": "composite_keys",
+              "fields": {
+                "engine_model": "engineModel",
+                "displacement_liters": "displacementLiters",
+                "certification_level": "certLevel",
+                "market_application": "marketApp",
+                "engine_type": "engineType",
+                "suggested_future_price": "priceMethod.equals(\"value based\") ? (publishPrice != null ? publishPrice + priceMethodValue : currentPrice + priceMethodValue) : (publishPrice != null ? publishPrice * (1 + priceMethodValue / 100) : currentPrice * (1 + priceMethodValue / 100))",
+                "pricing_action": "pricingAction == null || pricingAction.trim().isEmpty() ? fallbackActionId : pricingAction"
+              }
+            }
+          ]
+        }
+      ],
+      "test_specification_matrix": {
+        "mock_dependencies": [
+          {
+            "step_reference": 1,
+            "mock_target": "DATABASE_STREAM:configuration",
+            "mock_outputs": { "specs": { "engine_model": "V12-X", "displacement_liters": 15.6, "certification_level": "TIER_4", "market_application": "MINING", "engine_type": "DIESEL" } }
+          },
+          {
+            "step_reference": 2,
+            "mock_target": "DATABASE_STREAM:cu_suggested_prices_rer_engine",
+            "mock_outputs": { "value_rule": { "pricing_method": "value based", "pricing_method_value": 1500.00 } }
+          },
+          {
+            "step_reference": 3,
+            "mock_target": "DATABASE_STREAM:cu_rer_engine_pricing",
+            "mock_outputs": { "prices_filled": { "current_price": 45000.00, "publish_price": 47000.00, "pricing_action": "ACT-10" } }
+          },
+          {
+            "step_reference": 4,
+            "mock_target": "DATABASE_STREAM:p_pricing_action",
+            "mock_outputs": { "fallback": { "id": 999 } }
+          }
+        ],
+        "scenarios": [
+          {
+            "scenario_id": "TC_001_VALUE_BASED_HAPPY_PATH",
+            "given_request_data": { "technical_configuration": "TECH-01", "marketing_configuration": "MKT-A", "fuel_rating_hp": 1200.0 },
+            "simulated_profiles": ["specs", "value_rule", "prices_filled", "fallback"],
+            "assertions": {
+              "persistence_verifications": [
+                {
+                  "target_entity": "cu_rer_engine_pricing",
+                  "expected_operation": "update",
+                  "expected_fields": {
+                    "engine_model": "V12-X",
+                    "suggested_future_price": 48500.00,
+                    "pricing_action": "ACT-10"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

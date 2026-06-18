@@ -1,0 +1,189 @@
+{
+  "microservice_name": "cu_palantir_part_price_update",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_wf_palantir_part_price_update",
+  "request_data_extractions": [
+    {
+      "field_name": "short_part_number",
+      "data_type": "String",
+      "extraction_path": "String short_part_number = (String) data.getRequestData().get(\"short_part_number\");",
+      "purpose": "Extract the master sequence component string to look up catalog inventory references."
+    },
+    {
+      "field_name": "region",
+      "data_type": "String",
+      "extraction_path": "String region = (String) data.getRequestData().get(\"region\");",
+      "purpose": "Capture the incoming territory indicator to gauge validation rule constraints."
+    },
+    {
+      "field_name": "price",
+      "data_type": "Double",
+      "extraction_path": "Double price = (Double) data.getRequestData().get(\"price\");",
+      "purpose": "Isolate the financial valuation amount passed within the incoming message frame."
+    }
+  ],
+  "eligibility_criteria": {
+    "rule_name": "restrictToRestOfWorld",
+    "expression": "region.equalsIgnoreCase(\"Rest of the World\")",
+    "on_failure": "HALT_PROCESS"
+  },
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_LOOKUP",
+      "target_entity": "part",
+      "filter_name": "byShortPartNumber",
+      "where_clause_parameters": ["short_part_number"],
+      "columns_to_fetch": ["code", "cpm_initial_price", "suggested_cpm_initial_price"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams = com.google.common.collect.ArrayListMultimap.create(); queryParams.put(\"short_part_number\", short_part_number); matchedPartRecord = context.lookupRecord(\"part\", \"byShortPartNumber\", queryParams); if (matchedPartRecord == null) { return data; }",
+      "purpose": "Query and establish tracking dimensions from the primary product part definition ledger."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_LOOKUP",
+      "target_entity": "custom_palantir_price",
+      "filter_name": "byMappedPartNumber",
+      "where_clause_parameters": ["part_number"],
+      "columns_to_fetch": ["part_number", "suggested_cpm_initial_price"],
+      "code_snippet": "if (matchedPartRecord.get(\"cpm_initial_price\") != null) { String masterCode = String.valueOf(matchedPartRecord.get(\"code\")); customPricingRecord = context.lookupRecord(\"custom_palantir_price\", \"byMappedPartNumber\", masterCode); }",
+      "purpose": "Isolate custom transaction prices linked to the canonical master part number mapping reference when baseline prices are present."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "the primary master product structure contains a baseline initial price that is entirely unassigned",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "part",
+          "operation": "update",
+          "source_of_uuid": "Request.short_part_number",
+          "fields": {
+            "cpm_initial_price": "Request.price",
+            "notes": "\"Palantir Update on \" + context.getCurrentSystemDate(\"MMDDYYYY\")"
+          }
+        }
+      ]
+    },
+    {
+      "condition": "the core product row holds a populated initial pricing marker and a corresponding custom price row exists to receive amendments",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "custom_palantir_price",
+          "operation": "update",
+          "source_of_uuid": "matchedPartRecord.get(\"code\")",
+          "fields": {
+            "suggested_cpm_initial_price": "Request.price"
+          }
+        }
+      ]
+    },
+    {
+      "condition": "the product row contains an active baseline price but no secondary tracking row exists within the custom ledger",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "custom_palantir_price",
+          "operation": "insert",
+          "fields": {
+            "part_number": "matchedPartRecord.get(\"code\")",
+            "region": "Request.region",
+            "suggested_cpm_initial_price": "Request.price"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_LOOKUP:part",
+        "mock_outputs": {
+          "unpriced_item": { "code": "PART-CORE-100", "cpm_initial_price": null, "suggested_cpm_initial_price": null },
+          "prepriced_item": { "code": "PART-CORE-200", "cpm_initial_price": 450.00, "suggested_cpm_initial_price": 450.00 }
+        }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "DATABASE_LOOKUP:custom_palantir_price",
+        "mock_outputs": {
+          "existing_custom_row": { "part_number": "PART-CORE-200", "suggested_cpm_initial_price": 450.00 },
+          "absent_custom_row": null
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_NEW_INITIAL_PRICE_STAMP",
+        "description": "Verifies that components lacking baseline valuations are stamped with payload values and logged with calendar metadata timestamps.",
+        "given_request_data": { "short_part_number": "100", "region": "Rest of the World", "price": 1250.50 },
+        "simulated_profiles": ["unpriced_item"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "part",
+              "expected_operation": "update",
+              "expected_fields": {
+                "cpm_initial_price": 1250.50,
+                "notes": "Palantir Update on 06182026"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_UPDATE_EXISTING_SUGGESTED_PRICE",
+        "description": "Verifies that pre-priced components route price updates directly to current associated custom pricing rows.",
+        "given_request_data": { "short_part_number": "200", "region": "Rest of the World", "price": 485.00 },
+        "simulated_profiles": ["prepriced_item", "existing_custom_row"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "custom_palantir_price",
+              "expected_operation": "update",
+              "expected_fields": {
+                "suggested_cpm_initial_price": 485.00
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_INSERT_MISSING_SUGGESTED_PRICE_ROW",
+        "description": "Verifies that pre-priced elements trigger row creation within custom ledger tables if mapping relations do not exist yet.",
+        "given_request_data": { "short_part_number": "200", "region": "Rest of the World", "price": 520.00 },
+        "simulated_profiles": ["prepriced_item", "absent_custom_row"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "custom_palantir_price",
+              "expected_operation": "insert",
+              "expected_fields": {
+                "part_number": "PART-CORE-200",
+                "region": "Rest of the World",
+                "suggested_cpm_initial_price": 520.00
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_004_INVALID_REGION_ABORT",
+        "description": "Verifies that non-matching geographic entities are caught by checking rules, stopping downstream lookups.",
+        "given_request_data": { "short_part_number": "100", "region": "EMEA", "price": 999.00 },
+        "simulated_profiles": [],
+        "assertions": {
+          "pipeline_halted": true,
+          "persistence_verifications": []
+        }
+      }
+    ]
+  }
+}

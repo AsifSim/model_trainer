@@ -1,0 +1,103 @@
+{
+  "microservice_name": "Cu_ms_rer_engine_ftp",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_wf_rer_engine_ftp",
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_rer_engine_pricing",
+      "filter_name": "byPopulatedFuturePricing",
+      "where_clause_parameters": [],
+      "columns_to_fetch": ["future_price", "future_effective_date", "pricing_action_id", "publish_price", "publish_effective_date"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams = com.google.common.collect.ArrayListMultimap.create(); context.streamDataFromDB(\"cu_rer_engine_pricing\", \"byPopulatedFuturePricing\", queryParams, record -> { eligiblePricingRecords.add(record); });",
+      "purpose": "Query and stream all engine pricing records containing active future pricing metrics and effective dates."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_STREAM",
+      "target_entity": "p_pricing_action",
+      "filter_name": "byPricingActionIdAndApprovalStatus",
+      "where_clause_parameters": ["id", "approved"],
+      "columns_to_fetch": ["id", "approved"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> verifyParams = com.google.common.collect.ArrayListMultimap.create(); verifyParams.put(\"id\", currentRecord.get(\"pricing_action_id\")); verifyParams.put(\"approved\", \"Yes\"); context.streamDataFromDB(\"p_pricing_action\", \"byPricingActionIdAndApprovalStatus\", verifyParams, record -> { approvedActionsList.add(record); });",
+      "purpose": "Verify if the pricing action index associated with the record possesses a valid approved status token."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "future fields are not null and associated pricing action record status evaluates explicitly to approved",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "cu_rer_engine_pricing",
+          "operation": "update",
+          "source_of_uuid": "streamed_record_identifier",
+          "fields": {
+            "publish_price": "cu_rer_engine_pricing.future_price",
+            "publish_effective_date": "cu_rer_engine_pricing.future_effective_date",
+            "future_price": "NULL",
+            "future_effective_date": "NULL"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:cu_rer_engine_pricing",
+        "mock_outputs": {
+          "pending_records": [
+            { "uuid": "price-id-501", "future_price": 52000.00, "future_effective_date": "2026-07-01", "pricing_action_id": 10 },
+            { "uuid": "price-id-502", "future_price": 61000.00, "future_effective_date": "2026-08-15", "pricing_action_id": 11 }
+          ]
+        }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "DATABASE_STREAM:p_pricing_action",
+        "mock_outputs": {
+          "action_10_approved": [{ "id": 10, "approved": "Yes" }],
+          "action_11_rejected": []
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_APPROVED_FUTURE_PRICE_PROMOTION",
+        "description": "Verifies that eligible records with approved pricing actions successfully transition future prices to published statuses.",
+        "given_request_data": {},
+        "simulated_profiles": ["pending_records", "action_10_approved"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "cu_rer_engine_pricing",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "price-id-501",
+                "publish_price": 52000.00,
+                "publish_effective_date": "2026-07-01",
+                "future_price": null,
+                "future_effective_date": null
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_UNAPPROVED_FUTURE_PRICE_REJECTION",
+        "description": "Verifies that records with unapproved pricing actions are completely bypassed and retain their future values.",
+        "given_request_data": {},
+        "simulated_profiles": ["pending_records", "action_11_rejected"],
+        "assertions": {
+          "persistence_verifications": []
+        }
+      }
+    ]
+  }
+}

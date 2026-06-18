@@ -1,0 +1,206 @@
+{
+  "microservice_name": "CapitationRateSettingService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "payerOrganizationId",
+      "data_type": "String",
+      "extraction_path": "String payerOrganizationId = (String) data.getRequestData().get(\"payerOrganizationId\");",
+      "purpose": "Extracted primary search key for fetching payer account contract limits."
+    },
+    {
+      "field_name": "baseCapitationBudget",
+      "data_type": "Double",
+      "extraction_path": "Double baseCapitationBudget = Double.parseDouble(String.valueOf(data.getRequestData().get(\"baseCapitationBudget\")));",
+      "purpose": "Extracted baseline funding pool utilized for downstream programmatic adjustments."
+    },
+    {
+      "field_name": "clinicalProgramId",
+      "data_type": "String",
+      "extraction_path": "String clinicalProgramId = (String) data.getRequestData().get(\"clinicalProgramId\");",
+      "purpose": "Extracted program token utilized for database capitation matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "PayerRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["payerOrganizationId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"payerOrganizationId\")) { data.getRequestData().put(\"payerOrganizationId\", payerOrganizationId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "payerOrganizationId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"PayerRegistryService/v1\"));",
+      "purpose": "Ensure payer corporate credentials are securely bound to request maps before calling the registration service."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "ActuarialRiskProfilingService",
+      "target_version": "v1",
+      "input_parameters": ["clinicalProgramId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"clinicalProgramId\")) { data.getRequestData().put(\"clinicalProgramId\", clinicalProgramId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "clinicalProgramId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ActuarialRiskProfilingService/v1\"));",
+      "purpose": "Ensure programmatic identifying tokens are bound to request maps prior to pulling population risk profiles."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "CapitationRateMatrix",
+      "filter_name": "byClinicalProgramId",
+      "where_clause_parameters": ["clinicalProgramId"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "clinicalProgramId"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "clinical_program_id", "max_pmpm_cap_amount", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> capParams = com.google.common.collect.ArrayListMultimap.create(); capParams.put(\"clinicalProgramId\", clinicalProgramId); context.streamDataFromDB(\"CapitationRateMatrix\", \"byClinicalProgramId\", capParams, record -> { capUuidHolder[0] = String.valueOf(record.get(\"uuid\")); maxPmpmCapHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_pmpm_cap_amount\"))); });",
+      "purpose": "Fetch program specific PMPM caps using an ArrayListMultimap structure to capture records and system uuids."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RegionalSurchargeRules",
+      "filter_name": "byRiskTierCode",
+      "where_clause_parameters": ["risk_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "ActuarialRiskProfiling",
+          "extracted_field": "riskTierCode",
+          "mapped_to_where_parameter": "risk_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "risk_tier_code", "tax_surcharge_percentage", "jurisdiction_iso_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"risk_tier_code\", riskTierCode); context.streamDataFromDB(\"RegionalSurchargeRules\", \"byRiskTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically fetch local tax surcharges utilizing downstream profiling variables extracted during Step 2 processing loops."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "payer contract status is lapsed or extreme actuarial variance patterns detected",
+      "trigger_microservice": "ActuarialReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["clinicalProgramId", "payerOrganizationId", "extremeActuarialVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeActuarialVariancePatterns\")) { data.getRequestData().put(\"extremeActuarialVariancePatterns\", extremeActuarialVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "ActuarialRiskProfiling",
+          "extracted_field": "extremeActuarialVarianceFlag",
+          "mapped_to_input_parameter": "extremeActuarialVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ActuarialReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "CapitationRateMatrix",
+          "operation": "update",
+          "source_of_uuid": "CapitationRateMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "CapitationRateMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "ACTUARIAL_HOLD",
+            "processing_outcome": "Triggered manual underwriting review hold via financial risk protection gates.",
+            "updated_by": "CapitationRateSettingService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "ActuarialRiskProfilingService/v1",
+        "mock_outputs": {
+          "happy_path": { "contractStatus": "ACTIVE", "riskTierCode": "TIER_A", "extremeActuarialVarianceFlag": false },
+          "lapsed_profile": { "contractStatus": "LAPSED", "riskTierCode": "TIER_F", "extremeActuarialVarianceFlag": false },
+          "variance_detected": { "contractStatus": "ACTIVE", "riskTierCode": "TIER_F", "extremeActuarialVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:CapitationRateMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-444-fff", "clinical_program_id": "PROG-HEDIS", "max_pmpm_cap_amount": 425.00, "adjudication_status": "UNBUDGETED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing regional underwriting structural properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies program processing routes directly to actuarial boards when profile trends breach financial tolerance constraints.",
+        "given_request_data": { "payerOrganizationId": "PAY-909", "baseCapitationBudget": 1500000.00, "clinicalProgramId": "PROG-HEDIS" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "CapitationRateMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-444-fff",
+                "adjudication_status": "ACTUARIAL_HOLD",
+                "updated_by": "CapitationRateSettingService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_LAPSED_CONTRACT_ROUTE",
+        "description": "Verifies that an account registry state of LAPSED triggers identical programmatic budget lockdown rules.",
+        "given_request_data": { "payerOrganizationId": "PAY-909", "baseCapitationBudget": 1500000.00, "clinicalProgramId": "PROG-HEDIS" },
+        "simulated_profiles": ["lapsed_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "CapitationRateMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-444-fff",
+                "adjudication_status": "ACTUARIAL_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

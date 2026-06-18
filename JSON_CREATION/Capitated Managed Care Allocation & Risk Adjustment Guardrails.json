@@ -1,0 +1,206 @@
+{
+  "microservice_name": "CapitatedManagedCareService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "payerGroupId",
+      "data_type": "String",
+      "extraction_path": "String payerGroupId = (String) data.getRequestData().get(\"payerGroupId\");",
+      "purpose": "Extracted primary network key for locating managed care group insurance boundaries."
+    },
+    {
+      "field_name": "grossCapitationBaseline",
+      "data_type": "Double",
+      "extraction_path": "Double grossCapitationBaseline = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossCapitationBaseline\")));",
+      "purpose": "Extracted gross baseline financial metric utilized for Per-Member-Per-Month (PMPM) adjustments."
+    },
+    {
+      "field_name": "enrollmentPanelToken",
+      "data_type": "String",
+      "extraction_path": "String enrollmentPanelToken = (String) data.getRequestData().get(\"enrollmentPanelToken\");",
+      "purpose": "Extracted panel identifier used for database capitation matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "PayerNetworkRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["payerGroupId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"payerGroupId\")) { data.getRequestData().put(\"payerGroupId\", payerGroupId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "payerGroupId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"PayerNetworkRegistryService/v1\"));",
+      "purpose": "Ensure payer identification properties are bound to outbound map context before executing network validation checks."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "CohortUtilizationService",
+      "target_version": "v1",
+      "input_parameters": ["enrollmentPanelToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"enrollmentPanelToken\")) { data.getRequestData().put(\"enrollmentPanelToken\", enrollmentPanelToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "enrollmentPanelToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"CohortUtilizationService/v1\"));",
+      "purpose": "Ensure panel risk tokens are packaged into outbound maps prior to querying core cohort clinical classification tier listings."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "CapitatedRiskMatrix",
+      "filter_name": "byEnrollmentPanelToken",
+      "where_clause_parameters": ["enrollmentPanelToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "enrollmentPanelToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "enrollment_panel_token", "max_raf_allowable_factor", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> matrixParams = com.google.common.collect.ArrayListMultimap.create(); matrixParams.put(\"enrollmentPanelToken\", enrollmentPanelToken); context.streamDataFromDB(\"CapitatedRiskMatrix\", \"byEnrollmentPanelToken\", matrixParams, record -> { matrixUuidHolder[0] = String.valueOf(record.get(\"uuid\")); rafAllowableHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_raf_allowable_factor\"))); });",
+      "purpose": "Stream individual risk parameters using an ArrayListMultimap query container to capture records and unique primary keys."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "StateRegulatorySurcharge",
+      "filter_name": "byClinicalClassificationTierCode",
+      "where_clause_parameters": ["clinical_classification_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "CohortUtilization",
+          "extracted_field": "clinicalClassificationTierCode",
+          "mapped_to_where_parameter": "clinical_classification_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "clinical_classification_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"clinical_classification_tier_code\", clinicalClassificationTierCode); context.streamDataFromDB(\"StateRegulatorySurcharge\", \"byClinicalClassificationTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically pull local regulatory tax variables utilizing downstream parameters extracted during the Step 2 complexity evaluation sequence."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "payer network operational status is suspended or extreme spend variance patterns detected",
+      "trigger_microservice": "ActuarialReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["enrollmentPanelToken", "payerGroupId", "extremeSpendVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeSpendVariancePatterns\")) { data.getRequestData().put(\"extremeSpendVariancePatterns\", extremeSpendVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "CohortUtilization",
+          "extracted_field": "extremeSpendVarianceFlag",
+          "mapped_to_input_parameter": "extremeSpendVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ActuarialReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "CapitatedRiskMatrix",
+          "operation": "update",
+          "source_of_uuid": "CapitatedRiskMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "CapitatedRiskMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "MANAGED_CARE_HOLD",
+            "processing_outcome": "Triggered specialized actuarial board review via utilization containment gates.",
+            "updated_by": "CapitatedManagedCareService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "CohortUtilizationService/v1",
+        "mock_outputs": {
+          "happy_path": { "networkStatus": "ACTIVE", "clinicalClassificationTierCode": "COHORT_LOW_RISK", "extremeSpendVarianceFlag": false },
+          "suspended_profile": { "networkStatus": "SUSPENDED", "clinicalClassificationTierCode": "COHORT_HIGH_RISK", "extremeSpendVarianceFlag": false },
+          "variance_detected": { "networkStatus": "ACTIVE", "clinicalClassificationTierCode": "COHORT_HIGH_RISK", "extremeSpendVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:CapitatedRiskMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-888-kkk", "enrollment_panel_token": "PANEL-MCARE-2026", "max_raf_allowable_factor": 1.45, "adjudication_status": "UNAUDITED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing managed care baseline initialization properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies execution flow pivots flawlessly to actuarial review frameworks when cluster costs trigger threshold boundaries.",
+        "given_request_data": { "payerGroupId": "PAYER-NET-12", "grossCapitationBaseline": 2450000.00, "enrollmentPanelToken": "PANEL-MCARE-2026" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "CapitatedRiskMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-888-kkk",
+                "adjudication_status": "MANAGED_CARE_HOLD",
+                "updated_by": "CapitatedManagedCareService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_NETWORK_SUSPENDED_ROUTE",
+        "description": "Verifies that an enterprise network status of SUSPENDED activates the matching clinical protection filters.",
+        "given_request_data": { "payerGroupId": "PAYER-NET-12", "grossCapitationBaseline": 2450000.00, "enrollmentPanelToken": "PANEL-MCARE-2026" },
+        "simulated_profiles": ["suspended_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "CapitatedRiskMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-888-kkk",
+                "adjudication_status": "MANAGED_CARE_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

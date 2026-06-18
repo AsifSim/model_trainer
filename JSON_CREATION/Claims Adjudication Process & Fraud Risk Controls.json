@@ -1,0 +1,418 @@
+Corresponding Json
+
+{
+
+  "microservice_name": "ClaimsAdjudicationService",
+
+  "service_version": "v1",
+
+  "is_platform_triggered": true,
+
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+
+  "request_data_extractions": [
+
+    {
+
+      "field_name": "patientId",
+
+      "data_type": "String",
+
+      "extraction_path": "String patientId = (String) data.getRequestData().get(\"patientId\");",
+
+      "purpose": "Extracted primary search key for fetching customer account coverage variables."
+
+    },
+
+    {
+
+      "field_name": "providerId",
+
+      "data_type": "String",
+
+      "extraction_path": "String providerId = (String) data.getRequestData().get(\"providerId\");",
+
+      "purpose": "Extracted registration lookup key for medical facilities verification."
+
+    },
+
+    {
+
+      "field_name": "claimId",
+
+      "data_type": "String",
+
+      "extraction_path": "String claimId = (String) data.getRequestData().get(\"claimId\");",
+
+      "purpose": "Extracted target operational execution parameter."
+
+    }
+
+  ],
+
+  "workflow_steps": [
+
+    {
+
+      "step_number": 1,
+
+      "type": "MICROSERVICE_CALL",
+
+      "target_microservice": "PatientProfileService",
+
+      "target_version": "v1",
+
+      "input_parameters": ["patientId"],
+
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"patientId\")) { data.getRequestData().put(\"patientId\", patientId); }",
+
+      "data_dependencies": [
+
+        {
+
+          "type": "REQUEST_DATA",
+
+          "field_name": "patientId"
+
+        }
+
+      ],
+
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"PatientProfileService/v1\"));",
+
+      "purpose": "Ensure patientId parameter is bound to request data context maps before calling the target V1 profile validation engine."
+
+    },
+
+    {
+
+      "step_number": 2,
+
+      "type": "MICROSERVICE_CALL",
+
+      "target_microservice": "ProviderRegistrationService",
+
+      "target_version": "v1",
+
+      "input_parameters": ["providerId"],
+
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"providerId\")) { data.getRequestData().put(\"providerId\", providerId); }",
+
+      "data_dependencies": [
+
+        {
+
+          "type": "REQUEST_DATA",
+
+          "field_name": "providerId"
+
+        }
+
+      ],
+
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ProviderRegistrationService/v1\"));",
+
+      "purpose": "Ensure providerId parameter is bound to request data context maps before executing inter-service facility verification."
+
+    },
+
+    {
+
+      "step_number": 3,
+
+      "type": "DATABASE_STREAM",
+
+      "target_entity": "ClaimSummary",
+
+      "filter_name": "byClaimId",
+
+      "where_clause_parameters": ["claimId"],
+
+      "data_dependencies": [
+
+        {
+
+          "type": "REQUEST_DATA",
+
+          "field_name": "claimId"
+
+        }
+
+      ],
+
+      "columns_to_fetch": ["uuid", "claim_id", "patient_id", "base_claim_cost", "adjudication_status"],
+
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> claimParams = com.google.common.collect.ArrayListMultimap.create(); claimParams.put(\"claimId\", claimId); context.streamDataFromDB(\"ClaimSummary\", \"byClaimId\", claimParams, record -> { claimUuidHolder[0] = String.valueOf(record.get(\"uuid\")); baseClaimCostHolder[0] = Double.parseDouble(String.valueOf(record.get(\"base_claim_cost\"))); });",
+
+      "purpose": "Fetch the current main claim record using an ArrayListMultimap query descriptor to extract its primary key string uuid and base cost for downstream workflows."
+
+    },
+
+    {
+
+      "step_number": 4,
+
+      "type": "DATABASE_STREAM",
+
+      "target_entity": "TaxRulesConfiguration",
+
+      "filter_name": "byCoverageTier",
+
+      "where_clause_parameters": ["coverage_tier"],
+
+      "data_dependencies": [
+
+        {
+
+          "type": "STEP_OUTPUT",
+
+          "source_step": 1,
+
+          "source_entity": "PatientProfile",
+
+          "extracted_field": "coverageTier",
+
+          "mapped_to_where_parameter": "coverage_tier"
+
+        }
+
+      ],
+
+      "columns_to_fetch": ["uuid", "coverage_tier", "tax_percentage_rate", "regulatory_region_code"],
+
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"coverage_tier\", coverageTier); context.streamDataFromDB(\"TaxRulesConfiguration\", \"byCoverageTier\", taxParams, record -> { taxRateHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_percentage_rate\"))); });",
+
+      "purpose": "Fetch regional tax rule metrics from the database dynamically using an ArrayListMultimap with variables retrieved in Step 1."
+
+    }
+
+  ],
+
+  "conditional_routing": [
+
+    {
+
+      "condition": "patient profile status is suspended or high-risk mismatch patterns detected",
+
+      "trigger_microservice": "SpecialInvestigationsUnitService",
+
+      "target_version": "v1",
+
+      "input_parameters": ["claimId", "patientId", "highRiskMismatchPatterns"],
+
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"highRiskMismatchPatterns\")) { data.getRequestData().put(\"highRiskMismatchPatterns\", highRiskMismatchPatterns); }",
+
+      "data_dependencies": [
+
+        {
+
+          "type": "STEP_OUTPUT",
+
+          "source_step": 1,
+
+          "source_entity": "PatientProfile",
+
+          "extracted_field": "highRiskMismatchFlag",
+
+          "mapped_to_input_parameter": "highRiskMismatchPatterns"
+
+        }
+
+      ],
+
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"SpecialInvestigationsUnitService/v1\"));",
+
+      "persistence_actions": [
+
+        {
+
+          "entity": "ClaimSummary",
+
+          "operation": "update",
+
+          "source_of_uuid": "ClaimSummary_streamed_record",
+
+          "data_dependencies": [
+
+            {
+
+              "type": "STEP_OUTPUT",
+
+              "source_step": 3,
+
+              "source_entity": "ClaimSummary_streamed_record",
+
+              "extracted_field": "uuid"
+
+            }
+
+          ],
+
+          "fields": {
+
+            "adjudication_status": "FRAUD_HOLD",
+
+            "processing_outcome": "Triggered manual fraud hold via SIU matching criteria.",
+
+            "updated_by": "ClaimsAdjudicationService",
+
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+
+          }
+
+        }
+
+      ]
+
+    }
+
+  ],
+
+  "test_specification_matrix": {
+
+    "mock_dependencies": [
+
+      {
+
+        "step_reference": 1,
+
+        "mock_target": "PatientProfileService/v1",
+
+        "mock_outputs": {
+
+          "happy_path": { "policyStatus": "ACTIVE", "coverageTier": "PREMIUM", "highRiskMismatchFlag": false },
+
+          "suspended_profile": { "policyStatus": "SUSPENDED", "coverageTier": "STANDARD", "highRiskMismatchFlag": false },
+
+          "fraud_risk_detected": { "policyStatus": "ACTIVE", "coverageTier": "STANDARD", "highRiskMismatchFlag": true }
+
+        }
+
+      },
+
+      {
+
+        "step_reference": 3,
+
+        "mock_target": "DATABASE_STREAM:ClaimSummary",
+
+        "mock_outputs": {
+
+          "standard_row": { "uuid": "mock-uuid-999-aaa", "claim_id": "CLM-101", "patient_id": "PT-777", "base_claim_cost": 1500.00, "adjudication_status": "PENDING" }
+
+        }
+
+      }
+
+    ],
+
+    "scenarios": [
+
+      {
+
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+
+        "description": "Validation testing for missing initialization payload properties.",
+
+        "given_request_data": {},
+
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+
+      },
+
+      {
+
+        "scenario_id": "TC_002_HIGH_RISK_FRAUD_ROUTE",
+
+        "description": "Verifies execution shifts seamlessly to SIU sub-process and dispatches a valid DB update payload with an explicit string uuid key.",
+
+        "given_request_data": { "patientId": "PT-777", "providerId": "PROV-888", "claimId": "CLM-101" },
+
+        "simulated_profiles": ["fraud_risk_detected", "standard_row"],
+
+        "assertions": {
+
+          "microservice_invocations": [
+
+            { "microservice": "SpecialInvestigationsUnitService/v1", "expected_calls": 1 }
+
+          ],
+
+          "persistence_verifications": [
+
+            {
+
+              "target_entity": "ClaimSummary",
+
+              "expected_operation": "update",
+
+              "expected_fields": {
+
+                "uuid": "mock-uuid-999-aaa",
+
+                "adjudication_status": "FRAUD_HOLD",
+
+                "updated_by": "ClaimsAdjudicationService"
+
+              }
+
+            }
+
+          ]
+
+        }
+
+      },
+
+      {
+
+        "scenario_id": "TC_003_SUSPENDED_POLICY_ROUTE",
+
+        "description": "Verifies that a policy status of SUSPENDED forces the exact same SIU fraud-hold persistence update rule.",
+
+        "given_request_data": { "patientId": "PT-777", "providerId": "PROV-888", "claimId": "CLM-101" },
+
+        "simulated_profiles": ["suspended_profile", "standard_row"],
+
+        "assertions": {
+
+          "microservice_invocations": [
+
+            { "microservice": "SpecialInvestigationsUnitService/v1", "expected_calls": 1 }
+
+          ],
+
+          "persistence_verifications": [
+
+            {
+
+              "target_entity": "ClaimSummary",
+
+              "expected_operation": "update",
+
+              "expected_fields": {
+
+                "uuid": "mock-uuid-999-aaa",
+
+                "adjudication_status": "FRAUD_HOLD"
+
+              }
+
+            }
+
+          ]
+
+        }
+
+      }
+
+    ]
+
+  }
+
+}
+
+
+
+
+

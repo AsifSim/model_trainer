@@ -1,0 +1,76 @@
+{
+  "microservice_name": "cu_ms_rer_engine_ptc",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_wf_rer_engine_ptc",
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_rer_engine_pricing",
+      "filter_name": "byActivePublishedPricing",
+      "where_clause_parameters": ["current_date"],
+      "columns_to_fetch": ["publish_price", "publish_effective_date", "current_price", "current_effective_date"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams = com.google.common.collect.ArrayListMultimap.create(); queryParams.put(\"current_date\", context.getCurrentDate()); context.streamDataFromDB(\"cu_rer_engine_pricing\", \"byActivePublishedPricing\", queryParams, record -> { eligiblePricingRecords.add(record); });",
+      "purpose": "Query and stream all pricing ledger records where published prices are active and their effective timelines are less than or equal to the current system date."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "published price and effective date are populated and the effective date has been reached or passed relative to the system date",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "cu_rer_engine_pricing",
+          "operation": "update",
+          "source_of_uuid": "streamed_record_identifier",
+          "fields": {
+            "current_price": "cu_rer_engine_pricing.publish_price",
+            "current_effective_date": "cu_rer_engine_pricing.publish_effective_date",
+            "publish_price": "NULL",
+            "publish_effective_date": "NULL"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:cu_rer_engine_pricing",
+        "mock_outputs": {
+          "active_publish_records": [
+            { "uuid": "price-idx-901", "publish_price": 49000.00, "publish_effective_date": "2026-01-10", "current_price": 45000.00, "current_effective_date": "2025-01-10" },
+            { "uuid": "price-idx-902", "publish_price": 55000.00, "publish_effective_date": "2026-06-18", "current_price": 52000.00, "current_effective_date": "2025-06-18" }
+          ]
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_PUBLISHED_PRICE_ROLL_TO_CURRENT",
+        "description": "Verifies that records with past or current published effective dates successfully roll their values into active current price attributes.",
+        "given_request_data": {},
+        "simulated_profiles": ["active_publish_records"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "cu_rer_engine_pricing",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "price-idx-901",
+                "current_price": 49000.00,
+                "current_effective_date": "2026-01-10",
+                "publish_price": null,
+                "publish_effective_date": null
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

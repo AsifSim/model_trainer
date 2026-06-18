@@ -1,0 +1,107 @@
+{
+  "microservice_name": "cu_palantir__part_segment__update",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_wf_palantir_part_segment_update",
+  "request_data_extractions": [
+    {
+      "field_name": "short_part_number",
+      "data_type": "String",
+      "extraction_path": "String short_part_number = (String) data.getRequestData().get(\"short_part_number\");",
+      "purpose": "Extract the core component number handle used to cross-reference the parts catalog."
+    },
+    {
+      "field_name": "region",
+      "data_type": "String",
+      "extraction_path": "String region = (String) data.getRequestData().get(\"region\");",
+      "purpose": "Capture the geographical context to validate inbound service processing eligibility constraints."
+    }
+  ],
+  "eligibility_criteria": {
+    "rule_name": "enforceRestOfWorldRegion",
+    "expression": "region.equalsIgnoreCase(\"Rest of the World\")",
+    "on_failure": "HALT_PROCESS"
+  },
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "part",
+      "filter_name": "byShortPartAndRegion",
+      "where_clause_parameters": ["short_part_number", "region"],
+      "columns_to_fetch": ["part_number", "segment_type", "cpm_initial_price"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams = com.google.common.collect.ArrayListMultimap.create(); queryParams.put(\"short_part_number\", short_part_number); queryParams.put(\"region\", region); context.streamDataFromDB(\"part\", \"byShortPartAndRegion\", queryParams, record -> { matchedPartRecord = record; });",
+      "purpose": "Resolve the unique long form part number identifier and collect business classification segment configurations."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "the isolated part structure features a segment classification token evaluating explicitly as ANALYTICAL",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "dn_pricing",
+          "operation": "update",
+          "source_of_uuid": "matchedPartRecord.get(\"part_number\")",
+          "fields": {
+            "future_price": "matchedPartRecord.get(\"cpm_initial_price\")",
+            "future_effective_date": "context.getCurrentSystemDate()"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:part",
+        "mock_outputs": {
+          "analytical_record": { "part_number": "PN-88910-X", "segment_type": "ANALYTICAL", "cpm_initial_price": 1450.75 },
+          "operational_record": { "part_number": "PN-11220-Y", "segment_type": "OPERATIONAL", "cpm_initial_price": 980.00 }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_ELIGIBLE_ANALYTICAL_SEGMENT_UPDATE",
+        "description": "Verifies that an analytical part profile matching the rest-of-world region criteria successfully triggers downstream pricing updates.",
+        "given_request_data": { "short_part_number": "88910", "region": "Rest of the World" },
+        "simulated_profiles": ["analytical_record"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "dn_pricing",
+              "expected_operation": "update",
+              "expected_fields": {
+                "part_number": "PN-88910-X",
+                "future_price": 1450.75
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_ELIGIBLE_NON_ANALYTICAL_BYPASS",
+        "description": "Verifies that non-analytical parts passing the region test bypass pricing alterations completely.",
+        "given_request_data": { "short_part_number": "11220", "region": "Rest of the World" },
+        "simulated_profiles": ["operational_record"],
+        "assertions": {
+          "persistence_verifications": []
+        }
+      },
+      {
+        "scenario_id": "TC_003_INELIGIBLE_REGION_HALT",
+        "description": "Verifies that alternate region definitions fail initial eligibility constraints and truncate pipeline activity immediately.",
+        "given_request_data": { "short_part_number": "88910", "region": "NORTH_AMERICA" },
+        "simulated_profiles": [],
+        "assertions": {
+          "pipeline_halted": true,
+          "persistence_verifications": []
+        }
+      }
+    ]
+  }
+}

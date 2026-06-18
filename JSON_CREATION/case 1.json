@@ -1,0 +1,263 @@
+{
+  "microservice_name": "cu_ms_ecc_auto_seg",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "part_number",
+      "data_type": "String",
+      "extraction_path": "String part_number = (String) data.getRequestData().get(\"part_number\");",
+      "purpose": "Extracted trade identifier for tracking manufacturing components across international channels."
+    },
+    {
+      "field_name": "pricing_admin_owner",
+      "data_type": "String",
+      "extraction_path": "String pricing_admin_owner = (String) data.getRequestData().get(\"pricing_admin_owner\");",
+      "purpose": "Extracted string code used to isolate owner registries across global divisions."
+    },
+    {
+      "field_name": "name",
+      "data_type": "String",
+      "extraction_path": "String name = (String) data.getRequestData().get(\"name\");",
+      "purpose": "Extracted nomenclature part name utilized for legal nomenclature data matching."
+    },
+    {
+      "field_name": "uuid",
+      "data_type": "String",
+      "extraction_path": "String uuid = (String) data.getRequestData().get(\"uuid\");",
+      "purpose": "Extracted primary tracking handle mapping to target component inventory records."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "xpricing_admin_owner",
+      "filter_name": "byPricingAdminOwnerCode",
+      "where_clause_parameters": ["pricing_admin_owner"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "pricing_admin_owner"
+        }
+      ],
+      "columns_to_fetch": ["id"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams1 = com.google.common.collect.ArrayListMultimap.create(); queryParams1.put(\"code\", pricing_admin_owner); context.streamDataFromDB(\"xpricing_admin_owner\", \"byPricingAdminOwnerCode\", queryParams1, record -> { ownerIdHolder[0] = Integer.parseInt(String.valueOf(record.get(\"id\"))); });",
+      "purpose": "Resolve the unique compliance database surrogate ID corresponding to the administrator code provided in requests."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_STREAM",
+      "target_entity": "part_noun_name_ecc_xref",
+      "filter_name": "byNameAndPricingAdminOwner",
+      "where_clause_parameters": ["name", "pricing_admin_owner_id"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "name"
+        },
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 1,
+          "source_entity": "xpricing_admin_owner",
+          "extracted_field": "id",
+          "mapped_to_where_parameter": "pricing_admin_owner_id"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "ecc", "name", "pricing_admin_owner"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams2 = com.google.common.collect.ArrayListMultimap.create(); queryParams2.put(\"name\", name); queryParams2.put(\"pricing_admin_owner\", ownerIdHolder[0]); context.streamDataFromDB(\"part_noun_name_ecc_xref\", \"byNameAndPricingAdminOwner\", queryParams2, record -> { xrefRecordsList.add(record); });",
+      "purpose": "Query cross-reference schemas using the explicit strict criteria of matching name and matching internal owner identifier."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "part_noun_name_ecc_xref",
+      "filter_name": "byPartNameOnly",
+      "where_clause_parameters": ["name"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "name"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "ecc", "name", "pricing_admin_owner"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams3 = com.google.common.collect.ArrayListMultimap.create(); queryParams3.put(\"name\", name); context.streamDataFromDB(\"part_noun_name_ecc_xref\", \"byPartNameOnly\", queryParams3, record -> { nameOnlyRecordsList.add(record); });",
+      "purpose": "Query cross-reference layers using the fallback validation step filtering solely on part noun name definitions."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "exactly one record found in strict cross reference lookup and explicit classification text exists",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "input_parameters": ["uuid", "ecc"],
+      "parameter_injection_guard": "// Processing strict tier internal matching updates",
+      "data_dependencies": [],
+      "code_snippet": "// Handled via internal state engine branch routing mechanism",
+      "persistence_actions": [
+        {
+          "entity": "part",
+          "operation": "update",
+          "source_of_uuid": "Request_data_payload",
+          "data_dependencies": [
+            {
+              "type": "REQUEST_DATA",
+              "field_name": "uuid"
+            }
+          ],
+          "fields": {
+            "ecc": "PartNounNameECCXref.ecc"
+          }
+        }
+      ]
+    },
+    {
+      "condition": "zero strict records found and exactly one record isolated via name-only query fallback containing populated classification data",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "input_parameters": ["uuid", "ecc"],
+      "parameter_injection_guard": "// Processing secondary fallback matching updates",
+      "data_dependencies": [],
+      "code_snippet": "// Handled via internal state engine branch routing mechanism",
+      "persistence_actions": [
+        {
+          "entity": "part",
+          "operation": "update",
+          "source_of_uuid": "Request_data_payload",
+          "data_dependencies": [
+            {
+              "type": "REQUEST_DATA",
+              "field_name": "uuid"
+            }
+          ],
+          "fields": {
+            "ecc": "PartNounNameECCXrefByName.ecc"
+          }
+        }
+      ]
+    },
+    {
+      "condition": "no records returned from either strict cross reference lookups or nomenclature name filters",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "input_parameters": ["name", "pricing_admin_owner_id"],
+      "parameter_injection_guard": "// Registering newly discovered unclassified items",
+      "data_dependencies": [],
+      "code_snippet": "// Handled via internal state engine missing definition mapping creation rules",
+      "persistence_actions": [
+        {
+          "entity": "part_noun_name_ecc_xref",
+          "operation": "insert",
+          "source_of_uuid": "AUTO_GENERATED",
+          "data_dependencies": [],
+          "fields": {
+            "pricing_admin_owner": "PricingAdminOwnerData.id",
+            "name": "Request.name",
+            "ecc": "NULL"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:xpricing_admin_owner",
+        "mock_outputs": {
+          "standard_owner": { "id": 5051 }
+        }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "DATABASE_STREAM:part_noun_name_ecc_xref_strict",
+        "mock_outputs": {
+          "single_match_populated": [{ "uuid": "xref-row-77", "ecc": "3A001.a", "name": "VALVE_BLOCK", "pricing_admin_owner": 5051 }],
+          "no_match_found": []
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:part_noun_name_ecc_xref_name",
+        "mock_outputs": {
+          "fallback_match_populated": [{ "uuid": "xref-row-99", "ecc": "9A004.b", "name": "VALVE_BLOCK", "pricing_admin_owner": 6062 }],
+          "ambiguous_multiple_rows": [
+            { "uuid": "xref-row-101", "ecc": "EAR99", "name": "VALVE_BLOCK", "pricing_admin_owner": 1011 },
+            { "uuid": "xref-row-102", "ecc": "4A003", "name": "VALVE_BLOCK", "pricing_admin_owner": 2022 }
+          ]
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_STRICT_MATCH_UPDATE",
+        "description": "Verifies that discovering a single explicit match on name and owner triggers a target classification code rewrite.",
+        "given_request_data": { "part_number": "P-990-A", "pricing_admin_owner": "OWN-US", "name": "VALVE_BLOCK", "uuid": "part-uuid-123" },
+        "simulated_profiles": ["standard_owner", "single_match_populated", "no_match_found"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "part",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "part-uuid-123",
+                "ecc": "3A001.a"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_FALLBACK_NAME_UPDATE",
+        "description": "Verifies name-only lookup rules execute updates smoothly if the primary strict verification returns empty parameters.",
+        "given_request_data": { "part_number": "P-990-A", "pricing_admin_owner": "OWN-US", "name": "VALVE_BLOCK", "uuid": "part-uuid-123" },
+        "simulated_profiles": ["standard_owner", "no_match_found", "fallback_match_populated"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "part",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "part-uuid-123",
+                "ecc": "9A004.b"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_AMBIGUOUS_NAME_FAIL_SAFE",
+        "description": "Verifies the calculation engine short-circuits data modifications when multiple records cause matching conflicts.",
+        "given_request_data": { "part_number": "P-990-A", "pricing_admin_owner": "OWN-US", "name": "VALVE_BLOCK", "uuid": "part-uuid-123" },
+        "simulated_profiles": ["standard_owner", "no_match_found", "ambiguous_multiple_rows"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": []
+        }
+      },
+      {
+        "scenario_id": "TC_004_MISSING_CROSS_REFERENCE_INSERT",
+        "description": "Verifies that completely unknown parts append an unmapped tracing placeholder for future back-office resolution.",
+        "given_request_data": { "part_number": "P-990-A", "pricing_admin_owner": "OWN-US", "name": "VALVE_BLOCK", "uuid": "part-uuid-123" },
+        "simulated_profiles": ["standard_owner", "no_match_found", "no_match_found"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "part_noun_name_ecc_xref",
+              "expected_operation": "insert",
+              "expected_fields": {
+                "pricing_admin_owner": 5051,
+                "name": "VALVE_BLOCK",
+                "ecc": null
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

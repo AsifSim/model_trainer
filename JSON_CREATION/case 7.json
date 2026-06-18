@@ -1,0 +1,99 @@
+{
+  "microservice_name": "cu_ms_rer_suggested_to_rer_engine",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "entity_type",
+      "data_type": "String",
+      "extraction_path": "String entity_type = (String) data.getRequestData().get(\"entity_type\");",
+      "purpose": "Identify the incoming transactional payload entity type to determine downstream evaluation paths."
+    },
+    {
+      "field_name": "engine_model",
+      "data_type": "String",
+      "extraction_path": "String engine_model = (String) data.getRequestData().get(\"engine_model\");",
+      "purpose": "Extract the engineering model profile name used during matrix parameter searching."
+    },
+    {
+      "field_name": "configuration_code",
+      "data_type": "String",
+      "extraction_path": "String configuration_code = (String) data.getRequestData().get(\"configuration_code\");",
+      "purpose": "Extract the core marketing blueprint design token used for direct structure searching."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_suggested_prices_rer_engine",
+      "filter_name": "byDynamicAttributeMatrix",
+      "where_clause_parameters": ["engine_model", "displacement", "certification_level", "market_application", "engine_type", "fuel_rating_hp"],
+      "columns_to_fetch": ["uuid", "pricing_method", "pricing_method_value"],
+      "code_snippet": "if (\"cu_suggested_prices_rer_engine\".equalsIgnoreCase(entity_type)) { com.google.common.collect.Multimap<String, Object> params = com.google.common.collect.ArrayListMultimap.create(); params.put(\"engine_model\", engine_model); context.streamDataFromDB(\"cu_suggested_prices_rer_engine\", \"byDynamicAttributeMatrix\", params, record -> { matchedPricingRecords.add(record); }); }",
+      "purpose": "Stream and collect price specification keys utilizing a multi-variable engine parameter matrix that evaluates filled and empty fields."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_rer_engine_pricing",
+      "filter_name": "byMarketingConfigurationReference",
+      "where_clause_parameters": ["marketing_configuration"],
+      "columns_to_fetch": ["uuid", "technical_configuration", "marketing_configuration", "fuel_rating_hp"],
+      "code_snippet": "if (\"configuration\".equalsIgnoreCase(entity_type)) { com.google.common.collect.Multimap<String, Object> params = com.google.common.collect.ArrayListMultimap.create(); params.put(\"marketing_configuration\", configuration_code); context.streamDataFromDB(\"cu_rer_engine_pricing\", \"byMarketingConfigurationReference\", params, record -> { matchedPricingRecords.add(record); }); }",
+      "purpose": "Query and group core pricing rows linked with a designated marketing design package configuration code."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "target ledger records are successfully matching and extracted individually out of the search context",
+      "trigger_microservice": "cu_ms_rer_engine_attributes_update",
+      "target_version": "v1",
+      "parameter_injection_guard": "data.getRequestData().put(\"technical_configuration\", record.get(\"technical_configuration\")); data.getRequestData().put(\"marketing_configuration\", record.get(\"marketing_configuration\")); data.getRequestData().put(\"fuel_rating_hp\", record.get(\"fuel_rating_hp\"));",
+      "data_dependencies": [
+        { "type": "STREAMED_RECORD", "field_name": "technical_configuration" },
+        { "type": "STREAMED_RECORD", "field_name": "marketing_configuration" },
+        { "type": "STREAMED_RECORD", "field_name": "fuel_rating_hp" }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:cu_suggested_prices_rer_engine",
+        "mock_outputs": { "suggested_rows": [{ "uuid": "sug-idx-100", "technical_configuration": "T-900", "marketing_configuration": "M-100", "fuel_rating_hp": 850.0 }] }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "DATABASE_STREAM:cu_rer_engine_pricing",
+        "mock_outputs": { "config_rows": [{ "uuid": "prc-idx-200", "technical_configuration": "T-900", "marketing_configuration": "M-K2", "fuel_rating_hp": 950.0 }] }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_SUGGESTED_PRICES_TRIGGER_PATH",
+        "description": "Verifies that processing a suggested pricing entity triggers iterative downstream attribute modification calls.",
+        "given_request_data": { "entity_type": "cu_suggested_prices_rer_engine", "engine_model": "V8-Turbo" },
+        "simulated_profiles": ["suggested_rows"],
+        "assertions": {
+          "downstream_invocations": [
+            { "expected_microservice": "cu_ms_rer_engine_attributes_update", "expected_parameters": { "technical_configuration": "T-900", "marketing_configuration": "M-100", "fuel_rating_hp": 850.0 } }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_CONFIGURATION_CODE_TRIGGER_PATH",
+        "description": "Verifies that a configuration code payload successfully routes price sync indicators via the configuration search branch.",
+        "given_request_data": { "entity_type": "configuration", "configuration_code": "M-K2" },
+        "simulated_profiles": ["config_rows"],
+        "assertions": {
+          "downstream_invocations": [
+            { "expected_microservice": "cu_ms_rer_engine_attributes_update", "expected_parameters": { "technical_configuration": "T-900", "marketing_configuration": "M-K2", "fuel_rating_hp": 950.0 } }
+          ]
+        }
+      }
+    ]
+  }
+}

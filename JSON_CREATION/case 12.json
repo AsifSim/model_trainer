@@ -1,0 +1,181 @@
+{
+  "microservice_name": "cu_palantir_dn_pricing_update",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_palantir_price_wfm_ib",
+  "request_data_extractions": [
+    {
+      "field_name": "short_part_number",
+      "data_type": "String",
+      "extraction_path": "String short_part_number = (String) data.getRequestData().get(\"short_part_number\");",
+      "purpose": "Extract the inbound short segment component code to map against the core inventory library."
+    },
+    {
+      "field_name": "region",
+      "data_type": "String",
+      "extraction_path": "String region = (String) data.getRequestData().get(\"region\");",
+      "purpose": "Capture the geographical region descriptor used to derive the system region index code."
+    },
+    {
+      "field_name": "price",
+      "data_type": "Double",
+      "extraction_path": "Double price = (Double) data.getRequestData().get(\"price\");",
+      "purpose": "Extract the new incoming future price baseline valuation update."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_LOOKUP",
+      "target_entity": "part",
+      "filter_name": "byShortPartNumber",
+      "where_clause_parameters": ["short_part_number"],
+      "columns_to_fetch": ["code"],
+      "code_snippet": "String partNumber = context.getSingleAttribute(\"part\", \"byShortPartNumber\", short_part_number, \"code\");",
+      "purpose": "Resolve the comprehensive canonical master part_number string mapping identifier."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_LOOKUP",
+      "target_entity": "p_pricing_region",
+      "filter_name": "byRegionNameMatch",
+      "where_clause_parameters": ["name"],
+      "columns_to_fetch": ["id"],
+      "code_snippet": "String regionId = context.getSingleAttribute(\"p_pricing_region\", \"byRegionNameMatch\", region, \"id\");",
+      "purpose": "Translate text-based localized regional parameters into numeric system region unique keys."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "dn_pricing",
+      "filter_name": "byPartNumberAndRegionId",
+      "where_clause_parameters": ["part_number", "region"],
+      "columns_to_fetch": ["pricing_admin_owner", "product_bu", "current_price", "publish_price"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> pricingParams = com.google.common.collect.ArrayListMultimap.create(); pricingParams.put(\"part_number\", partNumber); pricingParams.put(\"region\", regionId); context.streamDataFromDB(\"dn_pricing\", \"byPartNumberAndRegionId\", pricingParams, record -> { matchedPricingRecord = record; }); if (matchedPricingRecord == null) { return data; }",
+      "purpose": "Verify record existence and capture pricing context parameters using the combined multi-column reference index."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_LOOKUP",
+      "target_entity": "xpalantir_config",
+      "filter_name": "byCompositeConfigMatrix",
+      "where_clause_parameters": ["region", "pricing_admin_owner", "product_bu"],
+      "columns_to_fetch": ["pricing_action", "future_effective_date", "change_reason", "notes"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> cfgParams = com.google.common.collect.ArrayListMultimap.create(); cfgParams.put(\"region\", regionId); cfgParams.put(\"pricing_admin_owner\", matchedPricingRecord.get(\"pricing_admin_owner\")); cfgParams.put(\"product_bu\", matchedPricingRecord.get(\"product_bu\")); customConfig = context.lookupRecord(\"xpalantir_config\", \"byCompositeConfigMatrix\", cfgParams);",
+      "purpose": "Resolve regional pricing administration governance rules and attributes from the palantir configuration catalog."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "current_price or publish_price variables are explicitly populated within the downstream pricing ledger record",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "dn_pricing",
+          "operation": "update",
+          "source_of_uuid": "composite_part_number_and_region",
+          "fields": {
+            "future_price": "Request.price",
+            "pricing_action": "customConfig.get(\"pricing_action\")",
+            "future_effective_date": "customConfig.get(\"future_effective_date\")",
+            "change_reason": "customConfig.get(\"change_reason\")",
+            "notes": "customConfig.get(\"notes\")",
+            "regional_pricing_flag": "!region.equalsIgnoreCase(\"Rest of the World\") ? \"Yes\" : dn_pricing.regional_pricing_flag"
+          }
+        }
+      ]
+    },
+    {
+      "condition": "both current_price and publish_price values evaluate completely to null inside the pricing structure",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "dn_pricing",
+          "operation": "update",
+          "source_of_uuid": "composite_part_number_and_region",
+          "fields": {
+            "future_price": "Request.price",
+            "future_effective_date": "context.getCurrentSystemDate(\"MMDDYYYY\")",
+            "notes": "String.valueOf(matchedPricingRecord.get(\"notes\")) + \" Palantir Update on \" + context.getCurrentSystemDate(\"MMDDYYYY\")",
+            "regional_pricing_flag": "!region.equalsIgnoreCase(\"Rest of the World\") ? \"Yes\" : dn_pricing.regional_pricing_flag"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_LOOKUP:part",
+        "mock_outputs": { "resolved_code": "PN-77610" }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "DATABASE_LOOKUP:p_pricing_region",
+        "mock_outputs": { "resolved_id": "REG-05" }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:dn_pricing",
+        "mock_outputs": {
+          "populated_pricing_row": { "pricing_admin_owner": "OWNER_A", "product_bu": "BU_HEAVY", "current_price": 5400.00, "publish_price": 5600.00, "notes": "Init" },
+          "empty_pricing_row": { "pricing_admin_owner": "OWNER_B", "product_bu": "BU_LIGHT", "current_price": null, "publish_price": null, "notes": "Blank Ledger" }
+        }
+      },
+      {
+        "step_reference": 4,
+        "mock_target": "DATABASE_LOOKUP:xpalantir_config",
+        "mock_outputs": {
+          "config_spec": { "pricing_action": "PA-99", "future_effective_date": "12312026", "change_reason": "PALANTIR_REINDEX", "notes": "Config Note Override" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_POPULATED_PRICE_ROW_DOMESTIC",
+        "description": "Verifies that pricing data is synchronized via config properties when price references exist for a non-ROW location.",
+        "given_request_data": { "short_part_number": "77610", "region": "NORTH_AMERICA", "price": 5990.00 },
+        "simulated_profiles": ["resolved_code", "resolved_id", "populated_pricing_row", "config_spec"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "dn_pricing",
+              "expected_operation": "update",
+              "expected_fields": {
+                "future_price": 5990.00,
+                "pricing_action": "PA-99",
+                "future_effective_date": "12312026",
+                "change_reason": "PALANTIR_REINDEX",
+                "notes": "Config Note Override",
+                "regional_pricing_flag": "Yes"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_EMPTY_PRICE_ROW_GLOBAL_ROW",
+        "description": "Verifies that unpriced ledger targets receive calendar timestamps and localized audit text tracking, preserving standard regional options.",
+        "given_request_data": { "short_part_number": "77610", "region": "Rest of the World", "price": 125.50 },
+        "simulated_profiles": ["resolved_code", "resolved_id", "empty_pricing_row", "config_spec"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "dn_pricing",
+              "expected_operation": "update",
+              "expected_fields": {
+                "future_price": 125.50,
+                "future_effective_date": "06182026",
+                "notes": "Blank Ledger Palantir Update on 06182026"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,154 @@
+{
+  "microservice_name": "cu_ms_select_design_config_part_update_criteria3",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_wf_select_design_config_part_update",
+  "request_data_extractions": [
+    {
+      "field_name": "top_three_configurations",
+      "data_type": "List<String>",
+      "extraction_path": "List<String> top_three_configurations = (List<String>) data.getRequestData().get(\"top_three_configurations\");",
+      "purpose": "Extract the top three design configuration keys from the request payload to begin fallback validation filtering."
+    },
+    {
+      "field_name": "uuid",
+      "data_type": "String",
+      "extraction_path": "String uuid = (String) data.getRequestData().get(\"uuid\");",
+      "purpose": "Capture the internal record unique identifier token to map into the outbound response metadata."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config_notes",
+      "filter_name": "evaluateDecadeTimelineBatch",
+      "where_clause_parameters": ["codes_list", "cutoff_year"],
+      "columns_to_fetch": ["design_config_num", "engine_serial_num"],
+      "code_snippet": "int currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR); boolean anyDecadeHistory = false; for(String cfg : top_three_configurations) { int count = context.executeVolumeQuery(\"cu_esn_bom_option_config_notes\", \"byYearCutoff\", cfg, currentYear - 10); if(count > 0) { anyDecadeHistory = true; } } if(!anyDecadeHistory) { context.triggerExternalService(\"WindchillService\", data); return data; }",
+      "purpose": "Confirm production viability across a trailing 10-year bracket for all three configurations, instantly throwing an external service hook if all profiles return zero records."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config_notes",
+      "filter_name": "evaluateHorizonMetricsBatch",
+      "where_clause_parameters": ["codes_list", "current_year"],
+      "columns_to_fetch": ["design_config_num", "engine_serial_num", "build_year"],
+      "code_snippet": "String finalConfig = null; int highestRecentCount = -1; for(String cfg : top_three_configurations) { int recent = context.executeHorizonQuery(\"cu_esn_bom_option_config_notes\", \"recentHorizon\", cfg, currentYear - 5); int older = context.executeHorizonQuery(\"cu_esn_bom_option_config_notes\", \"olderHorizon\", cfg, currentYear - 10, currentYear - 5); if(recent > older) { if(recent > highestRecentCount) { highestRecentCount = recent; finalConfig = cfg; } } } if(finalConfig == null) { context.triggerExternalService(\"WindchillService\", data); return data; }",
+      "purpose": "Analyze production deltas across all candidates between a 5-year and 10-year horizon, selecting the configuration with the highest recent expansion volume."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "configuration",
+      "filter_name": "bySelectedConfigCode",
+      "where_clause_parameters": ["code"],
+      "columns_to_fetch": ["engine_model", "displacement_liters", "certification_level", "market_application", "engine_type", "fuel_system_type"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> cfgParams = com.google.common.collect.ArrayListMultimap.create(); cfgParams.put(\"code\", finalConfig); context.streamDataFromDB(\"configuration\", \"bySelectedConfigCode\", cfgParams, record -> { resolvedSpecs.putAll(record); });",
+      "purpose": "Resolve six master catalog engineering fields using the dynamically verified high-performing configuration token code."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "at least one candidate passes the growth trajectory checks and registers the absolute highest volume score inside the recent 5-year block",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "part",
+          "operation": "update",
+          "source_of_uuid": "Request.uuid",
+          "fields": {
+            "engine_model": "resolvedSpecs.get(\"engine_model\")",
+            "displacement_liters": "resolvedSpecs.get(\"displacement_liters\")",
+            "certification_level": "resolvedSpecs.get(\"certification_level\")",
+            "market_application": "resolvedSpecs.get(\"market_application\")",
+            "engine_type": "resolvedSpecs.get(\"engine_type\")",
+            "fuel_system_type": "resolvedSpecs.get(\"fuel_system_type\")"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "VOLUME_QUERY:cu_esn_bom_option_config_notes",
+        "mock_outputs": { "viable_mix": [15, 0, 140], "dead_mix": [0, 0, 0] }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "HORIZON_QUERY:cu_esn_bom_option_config_notes",
+        "mock_outputs": {
+          "growth_winner_cfg1": { "recent": 80, "older": 20 },
+          "growth_loser_cfg2": { "recent": 5, "older": 30 },
+          "growth_winner_cfg3": { "recent": 120, "older": 90 },
+          "stagnant_mix": { "recent": 40, "older": 40 }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:configuration",
+        "mock_outputs": {
+          "specs": {
+            "engine_model": "C15-ACERT",
+            "displacement_liters": 15.2,
+            "certification_level": "TIER_4_FINAL",
+            "market_application": "INDUSTRIAL",
+            "engine_type": "DIESEL",
+            "fuel_system_type": "MEUI"
+          }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_CRITERIA_3_SUCCESSFUL_PROMOTION",
+        "description": "Verifies successful part master updates when multiple configurations show positive growth vectors, prioritizing the absolute highest volume option.",
+        "given_request_data": { "top_three_configurations": ["CFG-001", "CFG-002", "CFG-003"], "uuid": "part-u-9031" },
+        "simulated_profiles": ["viable_mix", "growth_winner_cfg1", "growth_loser_cfg2", "growth_winner_cfg3", "specs"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "part",
+              "expected_operation": "update",
+              "expected_fields": {
+                "engine_model": "C15-ACERT",
+                "displacement_liters": 15.2,
+                "certification_level": "TIER_4_FINAL",
+                "market_application": "INDUSTRIAL",
+                "engine_type": "DIESEL",
+                "fuel_system_type": "MEUI"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_TOTAL_DECADE_EMPTINESS_FALLBACK",
+        "description": "Verifies that the system completely skips analysis and fires a windchill service synchronization event if all 3 configurations lack a decade of build records.",
+        "given_request_data": { "top_three_configurations": ["CFG-001", "CFG-002", "CFG-003"], "uuid": "part-u-9031" },
+        "simulated_profiles": ["dead_mix"],
+        "assertions": {
+          "external_system_calls": [
+            { "expected_service_name": "WindchillService", "payload_contains": ["top_three_configurations"] }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_NO_CONFIGURATIONS_MEET_GROWTH_CONDITIONS",
+        "description": "Verifies that execution drops out to windchill service handlers if all configurations fail the strict horizon growth requirement.",
+        "given_request_data": { "top_three_configurations": ["CFG-001"], "uuid": "part-u-9031" },
+        "simulated_profiles": ["viable_mix", "stagnant_mix"],
+        "assertions": {
+          "external_system_calls": [
+            { "expected_service_name": "WindchillService", "payload_contains": ["top_three_configurations"] }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "microservice_name": "cu_ms_esnconfig_part_update",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "child_part",
+      "data_type": "String",
+      "extraction_path": "String child_part = (String) data.getRequestData().get(\"child_part\");",
+      "purpose": "Extracted subsystem child component key used to initiate option history lookups."
+    },
+    {
+      "field_name": "short_part_number",
+      "data_type": "String",
+      "extraction_path": "String short_part_number = (String) data.getRequestData().get(\"short_part_number\");",
+      "purpose": "Extracted core part number reference tracking target segment matrix updates."
+    },
+    {
+      "field_name": "year",
+      "data_type": "Integer",
+      "extraction_path": "Integer year = Integer.parseInt(String.valueOf(data.getRequestData().get(\"year\")));",
+      "purpose": "Extracted year baseline value used for chronological volume alignment checks."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "PartEligibilityService",
+      "target_version": "v1",
+      "input_parameters": ["child_part"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"child_part\")) { data.getRequestData().put(\"child_part\", child_part); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "child_part"
+        }
+      ],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> partVerify = com.google.common.collect.ArrayListMultimap.create(); partVerify.put(\"short_part_number\", child_part); boolean isEligible = context.checkRecordExists(\"part\", partVerify); if(!isEligible) { throw new EligibilityException(\"Child part validation failed in master part entity registry.\"); }",
+      "purpose": "Enforce mandatory eligibility rules by verifying the child_part string exists within the master part database table before allowing processing."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_wc_option_child",
+      "filter_name": "byChildPart",
+      "where_clause_parameters": ["child_part"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "child_part"
+        }
+      ],
+      "columns_to_fetch": ["rev_option_no"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> optionParams = com.google.common.collect.ArrayListMultimap.create(); optionParams.put(\"child_part\", child_part); context.streamDataFromDB(\"cu_wc_option_child\", \"byChildPart\", optionParams, record -> { optionRevList.add(String.valueOf(record.get(\"rev_option_no\"))); });",
+      "purpose": "Stream and collect all registered option revision numbers belonging to the designated component record."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config",
+      "filter_name": "byOptionAssemblyNumbers",
+      "where_clause_parameters": ["option_assembly_num_list"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "cu_wc_option_child",
+          "extracted_field": "rev_option_no",
+          "mapped_to_where_parameter": "option_assembly_num_list"
+        }
+      ],
+      "columns_to_fetch": ["engine_serial_num", "build_date"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> bomParams = com.google.common.collect.ArrayListMultimap.create(); bomParams.put(\"option_assembly_num\", optionRevList); context.streamDataFromDB(\"cu_esn_bom_option_config\", \"byOptionAssemblyNumbers\", bomParams, record -> { java.util.Date bDate = (java.util.Date) record.get(\"build_date\"); if(maxDate[0] == null || bDate.after(maxDate[0])) { maxDate[0] = bDate; } });",
+      "purpose": "Extract production histories mapping option revision keys to assembly configuration structures to determine latest build date targets."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_bom_config_vol",
+      "filter_name": "byExtractedBuildYear",
+      "where_clause_parameters": ["year"],
+      "data_dependencies": [
+        {
+          "type": "PREVIOUS_STEP_CALCULATION",
+          "source_step": 3,
+          "extracted_field": "max_build_date_year",
+          "mapped_to_where_parameter": "year"
+        }
+      ],
+      "columns_to_fetch": ["design_config_num", "esn_count"],
+      "code_snippet": "java.util.Calendar cal = java.util.Calendar.getInstance(); cal.setTime(maxDate[0]); int extractedYear = cal.get(java.util.Calendar.YEAR); extractedYearHolder[0] = extractedYear; com.google.common.collect.Multimap<String, Object> volParams = com.google.common.collect.ArrayListMultimap.create(); volParams.put(\"year\", extractedYear); context.streamDataFromDB(\"cu_bom_config_vol\", \"byExtractedBuildYear\", volParams, record -> { int currentCount = Integer.parseInt(String.valueOf(record.get(\"esn_count\"))); if(currentCount > maxEsnCount[0]) { maxEsnCount[0] = currentCount; selectedConfigNum[0] = String.valueOf(record.get(\"design_config_num\")); } });",
+      "purpose": "Query configuration data volumes using the year parameter parsed from the maximum assembly build date found."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "eligibility criteria satisfied and production configurations successfully resolved",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "input_parameters": ["short_part_number", "extractedYear", "selectedConfigNum"],
+      "parameter_injection_guard": "// Execution paths for targeted configuration updates",
+      "data_dependencies": [],
+      "code_snippet": "// Managed natively by system transactional persistence routers",
+      "persistence_actions": [
+        {
+          "entity": "cu_part_segment",
+          "operation": "update_insert",
+          "source_of_uuid": "short_part_number",
+          "data_dependencies": [
+            {
+              "type": "REQUEST_DATA",
+              "field_name": "short_part_number"
+            }
+          ],
+          "fields": {
+            "last_year_esn_produced": "extractedYearHolder[0]",
+            "latest_configuration": "selectedConfigNum[0]"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "VALIDATE_RECORD_EXISTS:part",
+        "mock_outputs": {
+          "eligible": true,
+          "ineligible": false
+        }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "DATABASE_STREAM:cu_wc_option_child",
+        "mock_outputs": {
+          "standard_options": [{ "rev_option_no": "OPT-REV-200" }, { "rev_option_no": "OPT-REV-201" }]
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:cu_esn_bom_option_config",
+        "mock_outputs": {
+          "production_dates": [
+            { "engine_serial_num": "ESN-9988", "build_date": "2025-04-12" },
+            { "engine_serial_num": "ESN-9989", "build_date": "2026-02-20" }
+          ]
+        }
+      },
+      {
+        "step_reference": 4,
+        "mock_target": "DATABASE_STREAM:cu_bom_config_vol",
+        "mock_outputs": {
+          "volume_configurations": [
+            { "design_config_num": "CONFIG-SIGMA", "esn_count": 450 },
+            { "design_config_num": "CONFIG-OMEGA", "esn_count": 1280 }
+          ]
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_ELIGIBILITY_REJECTION_FLOW",
+        "description": "Verifies that service execution fails immediately if the target child_part cannot be found in the master part catalog.",
+        "given_request_data": { "child_part": "MISSING-COMP", "short_part_number": "SPN-001", "year": 2026 },
+        "simulated_profiles": ["ineligible"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": []
+        }
+      },
+      {
+        "scenario_id": "TC_002_SUCCESSFUL_UPSERT_ROUTING",
+        "description": "Verifies that processing successfully aggregates maximum dates, finds top configuration codes, and updates tracking tables.",
+        "given_request_data": { "child_part": "COMP-777", "short_part_number": "SPN-777", "year": 2026 },
+        "simulated_profiles": ["eligible", "standard_options", "production_dates", "volume_configurations"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "cu_part_segment",
+              "expected_operation": "update_insert",
+              "expected_fields": {
+                "short_part_number": "SPN-777",
+                "last_year_esn_produced": 2026,
+                "latest_configuration": "CONFIG-OMEGA"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

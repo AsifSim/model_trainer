@@ -1,0 +1,206 @@
+{
+  "microservice_name": "ReinsurancePremiumService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "cedingCompanyId",
+      "data_type": "String",
+      "extraction_path": "String cedingCompanyId = (String) data.getRequestData().get(\"cedingCompanyId\");",
+      "purpose": "Extracted primary search key for fetching ceding company treaty definitions."
+    },
+    {
+      "field_name": "grossRetainedPremium",
+      "data_type": "Double",
+      "extraction_path": "Double grossRetainedPremium = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossRetainedPremium\")));",
+      "purpose": "Extracted baseline premium handle utilized for downstream layered pricing adjustments."
+    },
+    {
+      "field_name": "riskPoolToken",
+      "data_type": "String",
+      "extraction_path": "String riskPoolToken = (String) data.getRequestData().get(\"riskPoolToken\");",
+      "purpose": "Extracted risk pool code utilized for database reinsurance treaty cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "TreatyRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["cedingCompanyId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"cedingCompanyId\")) { data.getRequestData().put(\"cedingCompanyId\", cedingCompanyId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "cedingCompanyId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"TreatyRegistryService/v1\"));",
+      "purpose": "Ensure ceding corporate credentials are securely bound to request maps before calling the registry service."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "CatastropheModelingService",
+      "target_version": "v1",
+      "input_parameters": ["riskPoolToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"riskPoolToken\")) { data.getRequestData().put(\"riskPoolToken\", riskPoolToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "riskPoolToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"CatastropheModelingService/v1\"));",
+      "purpose": "Ensure risk identifying tokens are bound to request maps prior to pulling accumulation and exposure logs."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "ReinsuranceTreatyMatrix",
+      "filter_name": "byRiskPoolToken",
+      "where_clause_parameters": ["riskPoolToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "riskPoolToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "risk_pool_token", "treaty_markup_percentage", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> treatyParams = com.google.common.collect.ArrayListMultimap.create(); treatyParams.put(\"riskPoolToken\", riskPoolToken); context.streamDataFromDB(\"ReinsuranceTreatyMatrix\", \"byRiskPoolToken\", treatyParams, record -> { treatyUuidHolder[0] = String.valueOf(record.get(\"uuid\")); markupPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"treaty_markup_percentage\"))); });",
+      "purpose": "Fetch pool specific treaty metrics using an ArrayListMultimap structure to capture records and system uuids."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "JurisdictionalTaxSurcharge",
+      "filter_name": "byExposureTierCode",
+      "where_clause_parameters": ["exposure_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "CatastropheModeling",
+          "extracted_field": "exposureTierCode",
+          "mapped_to_where_parameter": "exposure_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "exposure_tier_code", "tax_surcharge_percentage", "jurisdiction_iso_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"exposure_tier_code\", exposureTierCode); context.streamDataFromDB(\"JurisdictionalTaxSurcharge\", \"byExposureTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically fetch state or regulatory premium tax variables utilizing downstream metrics extracted during Step 2 loops."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "ceding company compliance status is non_compliant or extreme risk concentration patterns detected",
+      "trigger_microservice": "UnderwritingReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["riskPoolToken", "cedingCompanyId", "extremeRiskConcentrationPatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeRiskConcentrationPatterns\")) { data.getRequestData().put(\"extremeRiskConcentrationPatterns\", extremeRiskConcentrationPatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "CatastropheModeling",
+          "extracted_field": "extremeRiskConcentrationFlag",
+          "mapped_to_input_parameter": "extremeRiskConcentrationPatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"UnderwritingReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "ReinsuranceTreatyMatrix",
+          "operation": "update",
+          "source_of_uuid": "ReinsuranceTreatyMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "ReinsuranceTreatyMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "UNDERWRITING_HOLD",
+            "processing_outcome": "Triggered manual actuarial risk hold via placement liability protection gates.",
+            "updated_by": "ReinsurancePremiumService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "CatastropheModelingService/v1",
+        "mock_outputs": {
+          "happy_path": { "companyStatus": "COMPLIANT", "exposureTierCode": "ZONE_2", "extremeRiskConcentrationFlag": false },
+          "non_compliant_profile": { "companyStatus": "NON_COMPLIANT", "exposureTierCode": "ZONE_5", "extremeRiskConcentrationFlag": false },
+          "concentration_detected": { "companyStatus": "COMPLIANT", "exposureTierCode": "ZONE_5", "extremeRiskConcentrationFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:ReinsuranceTreatyMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-333-ggg", "risk_pool_token": "POOL-CAT-X", "treaty_markup_percentage": 0.085, "adjudication_status": "UNBOUND" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing premium adjustment structural properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies program processing routes directly to corporate review boards when accumulation filters detect peak exposure breaches.",
+        "given_request_data": { "cedingCompanyId": "CED-202", "grossRetainedPremium": 4500000.00, "riskPoolToken": "POOL-CAT-X" },
+        "simulated_profiles": ["concentration_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "UnderwritingReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "ReinsuranceTreatyMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-333-ggg",
+                "adjudication_status": "UNDERWRITING_HOLD",
+                "updated_by": "ReinsurancePremiumService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_NON_COMPLIANT_COMPANY_ROUTE",
+        "description": "Verifies that an account registry status of NON_COMPLIANT triggers identical financial threat containment scripts.",
+        "given_request_data": { "cedingCompanyId": "CED-202", "grossRetainedPremium": 4500000.00, "riskPoolToken": "POOL-CAT-X" },
+        "simulated_profiles": ["non_compliant_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "UnderwritingReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "ReinsuranceTreatyMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-333-ggg",
+                "adjudication_status": "UNDERWRITING_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

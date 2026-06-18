@@ -1,0 +1,206 @@
+{
+  "microservice_name": "RiskCorridorSettlementService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "underwritingCarrierId",
+      "data_type": "String",
+      "extraction_path": "String underwritingCarrierId = (String) data.getRequestData().get(\"underwritingCarrierId\");",
+      "purpose": "Extracted primary search key for fetching corporate carrier retention thresholds."
+    },
+    {
+      "field_name": "grossAllowableClaimsBaseline",
+      "data_type": "Double",
+      "extraction_path": "Double grossAllowableClaimsBaseline = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossAllowableClaimsBaseline\")));",
+      "purpose": "Extracted baseline claims financial handle used for downstream risk-corridor adjustments."
+    },
+    {
+      "field_name": "riskCorridorPoolToken",
+      "data_type": "String",
+      "extraction_path": "String riskCorridorPoolToken = (String) data.getRequestData().get(\"riskCorridorPoolToken\");",
+      "purpose": "Extracted pool token utilized for database stabilization matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "CarrierRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["underwritingCarrierId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"underwritingCarrierId\")) { data.getRequestData().put(\"underwritingCarrierId\", underwritingCarrierId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "underwritingCarrierId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"CarrierRegistryService/v1\"));",
+      "purpose": "Ensure carrier organizational credentials are fully bound to the request framework before running validation checks."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "RiskStabilizationComplianceService",
+      "target_version": "v1",
+      "input_parameters": ["riskCorridorPoolToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"riskCorridorPoolToken\")) { data.getRequestData().put(\"riskCorridorPoolToken\", riskCorridorPoolToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "riskCorridorPoolToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"RiskStabilizationComplianceService/v1\"));",
+      "purpose": "Ensure stabilization identifiers are packaged into outbound maps prior to extracting population variance metrics."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RiskCorridorThresholdMatrix",
+      "filter_name": "byRiskCorridorPoolToken",
+      "where_clause_parameters": ["riskCorridorPoolToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "riskCorridorPoolToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "risk_corridor_pool_token", "max_corridor_payout_percentage", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> matrixParams = com.google.common.collect.ArrayListMultimap.create(); matrixParams.put(\"riskCorridorPoolToken\", riskCorridorPoolToken); context.streamDataFromDB(\"RiskCorridorThresholdMatrix\", \"byRiskCorridorPoolToken\", matrixParams, record -> { matrixUuidHolder[0] = String.valueOf(record.get(\"uuid\")); payoutPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_corridor_payout_percentage\"))); });",
+      "purpose": "Stream target stabilization metrics via an ArrayListMultimap query container to cleanly capture matching row handles."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "JurisdictionalTaxSurcharge",
+      "filter_name": "byRiskTierCode",
+      "where_clause_parameters": ["risk_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "RiskStabilizationCompliance",
+          "extracted_field": "riskTierCode",
+          "mapped_to_where_parameter": "risk_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "risk_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"risk_tier_code\", riskTierCode); context.streamDataFromDB(\"JurisdictionalTaxSurcharge\", \"byRiskTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically evaluate regional ledger parameters utilizing downstream properties extracted during the Step 2 metric evaluations."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "underwriting carrier contract status is suspended or extreme spend variance patterns detected",
+      "trigger_microservice": "ActuarialReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["riskCorridorPoolToken", "underwritingCarrierId", "extremeSpendVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeSpendVariancePatterns\")) { data.getRequestData().put(\"extremeSpendVariancePatterns\", extremeSpendVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "RiskStabilizationCompliance",
+          "extracted_field": "extremeSpendVarianceFlag",
+          "mapped_to_input_parameter": "extremeSpendVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ActuarialReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "RiskCorridorThresholdMatrix",
+          "operation": "update",
+          "source_of_uuid": "RiskCorridorThresholdMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "RiskCorridorThresholdMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "RISK_CORRIDOR_HOLD",
+            "processing_outcome": "Triggered manual actuarial risk corridor hold via premium stabilization protection gates.",
+            "updated_by": "RiskCorridorSettlementService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "RiskStabilizationComplianceService/v1",
+        "mock_outputs": {
+          "happy_path": { "carrierStatus": "ACTIVE", "riskTierCode": "CORRIDOR_TIER_1", "extremeSpendVarianceFlag": false },
+          "suspended_profile": { "carrierStatus": "SUSPENDED", "riskTierCode": "CORRIDOR_TIER_3", "extremeSpendVarianceFlag": false },
+          "variance_detected": { "carrierStatus": "ACTIVE", "riskTierCode": "CORRIDOR_TIER_3", "extremeSpendVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:RiskCorridorThresholdMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-777-mmm", "risk_corridor_pool_token": "POOL-RC-2026", "max_corridor_payout_percentage": 0.12, "adjudication_status": "UNSETTLED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing risk corridor initialization parameters.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies billing engine redirects routing configurations to actuarial oversight branches when portfolio volatility triggers risk limits.",
+        "given_request_data": { "underwritingCarrierId": "CARRIER-707", "grossAllowableClaimsBaseline": 3400000.00, "riskCorridorPoolToken": "POOL-RC-2026" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "RiskCorridorThresholdMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-777-mmm",
+                "adjudication_status": "RISK_CORRIDOR_HOLD",
+                "updated_by": "RiskCorridorSettlementService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_CARRIER_SUSPENDED_ROUTE",
+        "description": "Verifies that an enterprise carrier operational profile status of SUSPENDED activates the matching settlement locks.",
+        "given_request_data": { "underwritingCarrierId": "CARRIER-707", "grossAllowableClaimsBaseline": 3400000.00, "riskCorridorPoolToken": "POOL-RC-2026" },
+        "simulated_profiles": ["suspended_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "RiskCorridorThresholdMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-777-mmm",
+                "adjudication_status": "RISK_CORRIDOR_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

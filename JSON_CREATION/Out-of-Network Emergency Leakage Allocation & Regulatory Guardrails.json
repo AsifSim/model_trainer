@@ -1,0 +1,206 @@
+{
+  "microservice_name": "OonEmergencyLeakageService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "providerGroupId",
+      "data_type": "String",
+      "extraction_path": "String providerGroupId = (String) data.getRequestData().get(\"providerGroupId\");",
+      "purpose": "Extracted primary practice key for locating independent clinical group boundaries."
+    },
+    {
+      "field_name": "grossChargedAmount",
+      "data_type": "Double",
+      "extraction_path": "Double grossChargedAmount = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossChargedAmount\")));",
+      "purpose": "Extracted gross charged metric utilized for Qualifying Payment Amount (QPA) calculation adjustments."
+    },
+    {
+      "field_name": "emergencyServiceToken",
+      "data_type": "String",
+      "extraction_path": "String emergencyServiceToken = (String) data.getRequestData().get(\"emergencyServiceToken\");",
+      "purpose": "Extracted service identifier used for database arbitration matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "ProviderRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["providerGroupId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"providerGroupId\")) { data.getRequestData().put(\"providerGroupId\", providerGroupId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "providerGroupId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ProviderRegistryService/v1\"));",
+      "purpose": "Ensure provider group identification properties are bound to outbound map context before executing historical validation checks."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "AcuityComplianceService",
+      "target_version": "v1",
+      "input_parameters": ["emergencyServiceToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"emergencyServiceToken\")) { data.getRequestData().put(\"emergencyServiceToken\", emergencyServiceToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "emergencyServiceToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"AcuityComplianceService/v1\"));",
+      "purpose": "Ensure service acuity tokens are packaged into outbound maps prior to querying core emergency clinical classification tier listings."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "OonEmergencyMatrix",
+      "filter_name": "byEmergencyServiceToken",
+      "where_clause_parameters": ["emergencyServiceToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "emergencyServiceToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "emergency_service_token", "max_qpa_allowable_amount", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> matrixParams = com.google.common.collect.ArrayListMultimap.create(); matrixParams.put(\"emergencyServiceToken\", emergencyServiceToken); context.streamDataFromDB(\"OonEmergencyMatrix\", \"byEmergencyServiceToken\", matrixParams, record -> { matrixUuidHolder[0] = String.valueOf(record.get(\"uuid\")); qpaAllowableHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_qpa_allowable_amount\"))); });",
+      "purpose": "Stream individual dynamic pricing parameters using an ArrayListMultimap query container to capture records and unique primary keys."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RegionalRegulatorySurcharge",
+      "filter_name": "byClinicalClassificationTierCode",
+      "where_clause_parameters": ["clinical_classification_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "AcuityCompliance",
+          "extracted_field": "clinicalClassificationTierCode",
+          "mapped_to_where_parameter": "clinical_classification_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "clinical_classification_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"clinical_classification_tier_code\", clinicalClassificationTierCode); context.streamDataFromDB(\"RegionalRegulatorySurcharge\", \"byClinicalClassificationTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically pull local jurisdiction surcharge parameters utilizing downstream parameters extracted during the Step 2 severity evaluation sequence."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "provider group credential status is revoked or extreme spend variance patterns detected",
+      "trigger_microservice": "FederalArbitrationService",
+      "target_version": "v1",
+      "input_parameters": ["emergencyServiceToken", "providerGroupId", "extremeSpendVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeSpendVariancePatterns\")) { data.getRequestData().put(\"extremeSpendVariancePatterns\", extremeSpendVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "AcuityCompliance",
+          "extracted_field": "extremeSpendVarianceFlag",
+          "mapped_to_input_parameter": "extremeSpendVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"FederalArbitrationService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "OonEmergencyMatrix",
+          "operation": "update",
+          "source_of_uuid": "OonEmergencyMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "OonEmergencyMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "ARBITRATION_HOLD",
+            "processing_outcome": "Triggered federal independent dispute resolution hold via balance billing threshold gates.",
+            "updated_by": "OonEmergencyLeakageService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "AcuityComplianceService/v1",
+        "mock_outputs": {
+          "happy_path": { "credentialStatus": "ACTIVE", "clinicalClassificationTierCode": "ACUITY_LEVEL_3", "extremeSpendVarianceFlag": false },
+          "revoked_profile": { "credentialStatus": "REVOKED", "clinicalClassificationTierCode": "ACUITY_LEVEL_5", "extremeSpendVarianceFlag": false },
+          "variance_detected": { "credentialStatus": "ACTIVE", "clinicalClassificationTierCode": "ACUITY_LEVEL_5", "extremeSpendVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:OonEmergencyMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-000-jjj", "emergency_service_token": "TOK-ER-911", "max_qpa_allowable_amount": 1450.00, "adjudication_status": "UNSETTLED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing strategic out-of-network initialization parameters.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies execution flow pivots flawlessly to regulatory arbitration frameworks when market prices trigger risk boundaries.",
+        "given_request_data": { "providerGroupId": "PROV-GRP-99", "grossChargedAmount": 8900.00, "emergencyServiceToken": "TOK-ER-911" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "FederalArbitrationService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "OonEmergencyMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-000-jjj",
+                "adjudication_status": "ARBITRATION_HOLD",
+                "updated_by": "OonEmergencyLeakageService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_CREDENTIAL_REVOKED_ROUTE",
+        "description": "Verifies that an enterprise provider registry status of REVOKED activates matching billing containment locks.",
+        "given_request_data": { "providerGroupId": "PROV-GRP-99", "grossChargedAmount": 8900.00, "emergencyServiceToken": "TOK-ER-911" },
+        "simulated_profiles": ["revoked_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "FederalArbitrationService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "OonEmergencyMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-000-jjj",
+                "adjudication_status": "ARBITRATION_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

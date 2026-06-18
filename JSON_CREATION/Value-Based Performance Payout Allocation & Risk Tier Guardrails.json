@@ -1,0 +1,206 @@
+{
+  "microservice_name": "ValueBasedPerformanceService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "providerOrganizationId",
+      "data_type": "String",
+      "extraction_path": "String providerOrganizationId = (String) data.getRequestData().get(\"providerOrganizationId\");",
+      "purpose": "Extracted primary corporate key for locating health system contract tiers."
+    },
+    {
+      "field_name": "grossPerformanceAllocationBaseline",
+      "data_type": "Double",
+      "extraction_path": "Double grossPerformanceAllocationBaseline = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossPerformanceAllocationBaseline\")));",
+      "purpose": "Extracted gross baseline financial metric used for shared-savings percentage scaling."
+    },
+    {
+      "field_name": "qualityMilestoneToken",
+      "data_type": "String",
+      "extraction_path": "String qualityMilestoneToken = (String) data.getRequestData().get(\"qualityMilestoneToken\");",
+      "purpose": "Extracted evaluation token used for database milestone matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "AcoContractRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["providerOrganizationId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"providerOrganizationId\")) { data.getRequestData().put(\"providerOrganizationId\", providerOrganizationId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "providerOrganizationId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"AcoContractRegistryService/v1\"));",
+      "purpose": "Ensure health group organizational credentials are bound to request maps prior to calling the contract directory."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "QualityScoreEfficacyService",
+      "target_version": "v1",
+      "input_parameters": ["qualityMilestoneToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"qualityMilestoneToken\")) { data.getRequestData().put(\"qualityMilestoneToken\", qualityMilestoneToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "qualityMilestoneToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"QualityScoreEfficacyService/v1\"));",
+      "purpose": "Ensure performance measurement vectors are appended to active frames before running data verification algorithms."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "PerformanceReimbursementMatrix",
+      "filter_name": "byQualityMilestoneToken",
+      "where_clause_parameters": ["qualityMilestoneToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "qualityMilestoneToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "quality_milestone_token", "max_shared_savings_rate", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> scoreParams = com.google.common.collect.ArrayListMultimap.create(); scoreParams.put(\"qualityMilestoneToken\", qualityMilestoneToken); context.streamDataFromDB(\"PerformanceReimbursementMatrix\", \"byQualityMilestoneToken\", scoreParams, record -> { scoreUuidHolder[0] = String.valueOf(record.get(\"uuid\")); sharedSavingsRateHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_shared_savings_rate\"))); });",
+      "purpose": "Fetch specific target matrix constraints using an ArrayListMultimap query container to capture records and unique internal keys."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RegionalTaxSurcharge",
+      "filter_name": "byPerformanceTierCode",
+      "where_clause_parameters": ["performance_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "QualityScoreEfficacy",
+          "extracted_field": "performanceTierCode",
+          "mapped_to_where_parameter": "performance_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "performance_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"performance_tier_code\", performanceTierCode); context.streamDataFromDB(\"RegionalTaxSurcharge\", \"byPerformanceTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically evaluate regional ledger parameters utilizing downstream properties extracted during the Step 2 metric evaluations."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "provider group operational contract status is default or extreme spend variance metrics isolated",
+      "trigger_microservice": "ActuarialComplianceService",
+      "target_version": "v1",
+      "input_parameters": ["qualityMilestoneToken", "providerOrganizationId", "extremeSpendVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeSpendVariancePatterns\")) { data.getRequestData().put(\"extremeSpendVariancePatterns\", extremeSpendVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "QualityScoreEfficacy",
+          "extracted_field": "extremeSpendVarianceFlag",
+          "mapped_to_input_parameter": "extremeSpendVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ActuarialComplianceService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "PerformanceReimbursementMatrix",
+          "operation": "update",
+          "source_of_uuid": "PerformanceReimbursementMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "PerformanceReimbursementMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "PERFORMANCE_HOLD",
+            "processing_outcome": "Triggered manual actuarial risk containment hold via financial quality audit gates.",
+            "updated_by": "ValueBasedPerformanceService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "QualityScoreEfficacyService/v1",
+        "mock_outputs": {
+          "happy_path": { "contractStatus": "ACTIVE", "performanceTierCode": "OPTIMAL_TIER_1", "extremeSpendVarianceFlag": false },
+          "default_profile": { "contractStatus": "DEFAULT", "performanceTierCode": "SUBSTANDARD_TIER_4", "extremeSpendVarianceFlag": false },
+          "variance_detected": { "contractStatus": "ACTIVE", "performanceTierCode": "SUBSTANDARD_TIER_4", "extremeSpendVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:PerformanceReimbursementMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-111-iii", "quality_milestone_token": "MS-VBC-2026", "max_shared_savings_rate": 0.25, "adjudication_status": "UNSETTLED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing systemic shared-savings deployment metadata.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies billing engine redirects routing configurations to actuarial oversight branches when cost anomalies cross tolerances.",
+        "given_request_data": { "providerOrganizationId": "ACO-SYS-55", "grossPerformanceAllocationBaseline": 980000.00, "qualityMilestoneToken": "MS-VBC-2026" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialComplianceService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "PerformanceReimbursementMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-111-iii",
+                "adjudication_status": "PERFORMANCE_HOLD",
+                "updated_by": "ValueBasedPerformanceService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_CONTRACT_DEFAULT_ROUTE",
+        "description": "Verifies that an enterprise contract registry flag of DEFAULT triggers identical forensic escrow safeguards.",
+        "given_request_data": { "providerOrganizationId": "ACO-SYS-55", "grossPerformanceAllocationBaseline": 980000.00, "qualityMilestoneToken": "MS-VBC-2026" },
+        "simulated_profiles": ["default_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialComplianceService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "PerformanceReimbursementMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-111-iii",
+                "adjudication_status": "PERFORMANCE_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

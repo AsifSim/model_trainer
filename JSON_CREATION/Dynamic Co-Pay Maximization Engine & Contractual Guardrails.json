@@ -1,0 +1,206 @@
+{
+  "microservice_name": "CoPayMaximizationService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "memberPolicyId",
+      "data_type": "String",
+      "extraction_path": "String memberPolicyId = (String) data.getRequestData().get(\"memberPolicyId\");",
+      "purpose": "Extracted primary search key for fetching customer account coverage limits."
+    },
+    {
+      "field_name": "grossDrugCost",
+      "data_type": "Double",
+      "extraction_path": "Double grossDrugCost = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossDrugCost\")));",
+      "purpose": "Extracted baseline cost field utilized for out-of-pocket maximum math calculations."
+    },
+    {
+      "field_name": "nationalDrugCode",
+      "data_type": "String",
+      "extraction_path": "String nationalDrugCode = (String) data.getRequestData().get(\"nationalDrugCode\");",
+      "purpose": "Extracted product tracking token utilized for database matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "MemberBenefitRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["memberPolicyId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"memberPolicyId\")) { data.getRequestData().put(\"memberPolicyId\", memberPolicyId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "memberPolicyId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"MemberBenefitRegistryService/v1\"));",
+      "purpose": "Ensure member policy credentials are securely bound to the request data maps before calling the accumulator service."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "FormularyTieringService",
+      "target_version": "v1",
+      "input_parameters": ["nationalDrugCode"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"nationalDrugCode\")) { data.getRequestData().put(\"nationalDrugCode\", nationalDrugCode); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "nationalDrugCode"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"FormularyTieringService/v1\"));",
+      "purpose": "Ensure product identifying parameters are bound to request maps prior to pulling core manufacturer coupon profiles."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "CoPayCapMatrix",
+      "filter_name": "byNationalDrugCode",
+      "where_clause_parameters": ["nationalDrugCode"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "nationalDrugCode"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "national_drug_code", "max_copay_cap_amount", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> capParams = com.google.common.collect.ArrayListMultimap.create(); capParams.put(\"nationalDrugCode\", nationalDrugCode); context.streamDataFromDB(\"CoPayCapMatrix\", \"byNationalDrugCode\", capParams, record -> { capUuidHolder[0] = String.valueOf(record.get(\"uuid\")); maxCopayCapHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_copay_cap_amount\"))); });",
+      "purpose": "Fetch localized category limit rules using an ArrayListMultimap structure to capture structural records and unique tracking uuids."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RegionalRegulatoryTax",
+      "filter_name": "bySpecialtyTierCode",
+      "where_clause_parameters": ["specialty_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "FormularyTiering",
+          "extracted_field": "specialtyTierCode",
+          "mapped_to_where_parameter": "specialty_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "specialty_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"specialty_tier_code\", specialtyTierCode); context.streamDataFromDB(\"RegionalRegulatoryTax\", \"bySpecialtyTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically fetch state or regional overhead tax parameters utilizing downstream variables extracted during Step 2 processing loops."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "member benefits status is terminated or extreme cost variance patterns detected",
+      "trigger_microservice": "AppealsReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["nationalDrugCode", "memberPolicyId", "extremeCostVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeCostVariancePatterns\")) { data.getRequestData().put(\"extremeCostVariancePatterns\", extremeCostVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "FormularyTiering",
+          "extracted_field": "extremeCostVarianceFlag",
+          "mapped_to_input_parameter": "extremeCostVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"AppealsReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "CoPayCapMatrix",
+          "operation": "update",
+          "source_of_uuid": "CoPayCapMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "CoPayCapMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "MAXIMIZER_HOLD",
+            "processing_outcome": "Triggered manual forensic maximizer audit hold via cost protection gates.",
+            "updated_by": "CoPayMaximizationService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "FormularyTieringService/v1",
+        "mock_outputs": {
+          "happy_path": { "benefitStatus": "ACTIVE", "specialtyTierCode": "TIER_4", "extremeCostVarianceFlag": false },
+          "terminated_profile": { "benefitStatus": "TERMINATED", "specialtyTierCode": "TIER_5", "extremeCostVarianceFlag": false },
+          "cost_variance_detected": { "benefitStatus": "ACTIVE", "specialtyTierCode": "TIER_5", "extremeCostVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:CoPayCapMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-777-ccc", "national_drug_code": "NDC-445", "max_copay_cap_amount": 250.00, "adjudication_status": "UNPROCESSED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing dynamic allocation structural properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies program processing routes directly to specialty boards when cost variables breach contract threshold constraints.",
+        "given_request_data": { "memberPolicyId": "POL-303", "grossDrugCost": 8400.00, "nationalDrugCode": "NDC-445" },
+        "simulated_profiles": ["cost_variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "AppealsReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "CoPayCapMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-777-ccc",
+                "adjudication_status": "MAXIMIZER_HOLD",
+                "updated_by": "CoPayMaximizationService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_TERMINATED_POLICY_ROUTE",
+        "description": "Verifies that an account contract state of TERMINATED triggers identical financial mitigation locking rules.",
+        "given_request_data": { "memberPolicyId": "POL-303", "grossDrugCost": 8400.00, "nationalDrugCode": "NDC-445" },
+        "simulated_profiles": ["terminated_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "AppealsReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "CoPayCapMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-777-ccc",
+                "adjudication_status": "MAXIMIZER_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

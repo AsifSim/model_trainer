@@ -1,0 +1,154 @@
+{
+  "microservice_name": "cu_ms_select_design_config_part_update_criteria2",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "cu_wf_select_design_config_part_update",
+  "request_data_extractions": [
+    {
+      "field_name": "top_three_configurations",
+      "data_type": "List<String>",
+      "extraction_path": "List<String> top_three_configurations = (List<String>) data.getRequestData().get(\"top_three_configurations\");",
+      "purpose": "Extract the prioritized high-volume design blueprint tokens passed from the initial parsing phase."
+    },
+    {
+      "field_name": "uuid",
+      "data_type": "String",
+      "extraction_path": "String uuid = (String) data.getRequestData().get(\"uuid\");",
+      "purpose": "Capture the primary tracking handle to append to the outbound execution payload response."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "configuration",
+      "filter_name": "byMultipleConfigCodes",
+      "where_clause_parameters": ["codes_list"],
+      "columns_to_fetch": ["code", "engine_model", "displacement_liters"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> queryParams = com.google.common.collect.ArrayListMultimap.create(); queryParams.put(\"codes\", top_three_configurations); context.streamDataFromDB(\"configuration\", \"byMultipleConfigCodes\", queryParams, record -> { candidateSpecsList.add(record); });",
+      "purpose": "Batch pull key engineering profile specifications for each of the top three design configuration candidates."
+    },
+    {
+      "step_number": 2,
+      "type": "APPLICATION_LOGIC_VALIDATION",
+      "code_snippet": "boolean modelsEqual = candidateSpecsList.stream().map(r -> String.valueOf(r.get(\"engine_model\"))).distinct().count() == 1; double maxDisp = candidateSpecsList.stream().mapToDouble(r -> Double.parseDouble(String.valueOf(r.get(\"displacement_liters\")))).max().orElse(0.0); double minDisp = candidateSpecsList.stream().mapToDouble(r -> Double.parseDouble(String.valueOf(r.get(\"displacement_liters\")))).min().orElse(0.0); boolean varianceValid = (maxDisp - minDisp) < 4.0; if (!(modelsEqual && varianceValid)) { context.triggerExternalService(\"Criteria3Service\", top_three_configurations); return data; }",
+      "purpose": "Evaluate engine model homogeneity and enforce strict bounds on volume variance before confirming resolution."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "configuration",
+      "filter_name": "byTop1ConfigCode",
+      "where_clause_parameters": ["code"],
+      "columns_to_fetch": ["engine_model", "displacement_liters", "certification_level", "market_application", "engine_type", "fuel_system_type"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> finalParams = com.google.common.collect.ArrayListMultimap.create(); finalParams.put(\"code\", top_three_configurations.get(0)); context.streamDataFromDB(\"configuration\", \"byTop1ConfigCode\", finalParams, record -> { resolvedSpecs.putAll(record); });",
+      "purpose": "Extract the complete set of six system descriptors from the primary high-volume design record."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "all candidate engine model types match identically and the maximum displacement volume spread remains under four liters",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "part",
+          "operation": "update",
+          "source_of_uuid": "Request.uuid",
+          "fields": {
+            "engine_model": "resolvedSpecs.get(\"engine_model\")",
+            "displacement_liters": "resolvedSpecs.get(\"displacement_liters\")",
+            "certification_level": "resolvedSpecs.get(\"certification_level\")",
+            "market_application": "resolvedSpecs.get(\"market_application\")",
+            "engine_type": "resolvedSpecs.get(\"engine_type\")",
+            "fuel_system_type": "resolvedSpecs.get(\"fuel_system_type\")"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:configuration",
+        "mock_outputs": {
+          "valid_spread": [
+            { "code": "CFG-A", "engine_model": "V16-L", "displacement_liters": 12.5 },
+            { "code": "CFG-B", "engine_model": "V16-L", "displacement_liters": 14.0 },
+            { "code": "CFG-C", "engine_model": "V16-L", "displacement_liters": 11.2 }
+          ],
+          "invalid_model_spread": [
+            { "code": "CFG-A", "engine_model": "V16-L", "displacement_liters": 12.5 },
+            { "code": "CFG-B", "engine_model": "Inline-6", "displacement_liters": 12.5 }
+          ],
+          "invalid_displacement_spread": [
+            { "code": "CFG-A", "engine_model": "V16-L", "displacement_liters": 10.0 },
+            { "code": "CFG-B", "engine_model": "V16-L", "displacement_liters": 15.0 }
+          ]
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:configuration_final",
+        "mock_outputs": {
+          "specs": {
+            "engine_model": "V16-L",
+            "displacement_liters": 12.5,
+            "certification_level": "EPA_TIER_4",
+            "market_application": "LOCOMOTIVE",
+            "engine_type": "HEAVY_DIESEL",
+            "fuel_system_type": "COMMON_RAIL"
+          }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_CRITERIA_2_VALIDATION_SUCCESS",
+        "description": "Verifies successful compilation and update of inventory component specs when model lines match and variance checks pass.",
+        "given_request_data": { "top_three_configurations": ["CFG-A", "CFG-B", "CFG-C"], "uuid": "part-uuid-9922" },
+        "simulated_profiles": ["valid_spread", "specs"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "part",
+              "expected_operation": "update",
+              "expected_fields": {
+                "engine_model": "V16-L",
+                "displacement_liters": 12.5,
+                "certification_level": "EPA_TIER_4",
+                "market_application": "LOCOMOTIVE",
+                "engine_type": "HEAVY_DIESEL",
+                "fuel_system_type": "COMMON_RAIL"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_MODEL_MISMATCH_ROUTES_TO_CRITERIA_3",
+        "description": "Verifies that an external routing sequence to Criteria 3 occurs if underlying engine architecture labels diverge.",
+        "given_request_data": { "top_three_configurations": ["CFG-A", "CFG-B"], "uuid": "part-uuid-9922" },
+        "simulated_profiles": ["invalid_model_spread"],
+        "assertions": {
+          "external_system_calls": [
+            { "expected_service_name": "Criteria3Service", "payload_contains": ["CFG-A"] }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_DISPLACEMENT_OVERAGES_ROUTE_TO_CRITERIA_3",
+        "description": "Verifies that a routing redirection occurs if total displacement limits deviate by four or more liters.",
+        "given_request_data": { "top_three_configurations": ["CFG-A", "CFG-B"], "uuid": "part-uuid-9922" },
+        "simulated_profiles": ["invalid_displacement_spread"],
+        "assertions": {
+          "external_system_calls": [
+            { "expected_service_name": "Criteria3Service", "payload_contains": ["CFG-A"] }
+          ]
+        }
+      }
+    ]
+  }
+}

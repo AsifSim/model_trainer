@@ -1,0 +1,206 @@
+{
+  "microservice_name": "RebateAllocationService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "wholesalerAccountId",
+      "data_type": "String",
+      "extraction_path": "String wholesalerAccountId = (String) data.getRequestData().get(\"wholesalerAccountId\");",
+      "purpose": "Extracted primary search key for fetching distributor account contract limits."
+    },
+    {
+      "field_name": "totalPurchaseVolume",
+      "data_type": "Double",
+      "extraction_path": "Double totalPurchaseVolume = Double.parseDouble(String.valueOf(data.getRequestData().get(\"totalPurchaseVolume\")));",
+      "purpose": "Extracted baseline volume handle utilized for downstream tier rebate adjustments."
+    },
+    {
+      "field_name": "formularyDrugId",
+      "data_type": "String",
+      "extraction_path": "String formularyDrugId = (String) data.getRequestData().get(\"formularyDrugId\");",
+      "purpose": "Extracted drug token utilized for database rebate tier matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "WholesalerRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["wholesalerAccountId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"wholesalerAccountId\")) { data.getRequestData().put(\"wholesalerAccountId\", wholesalerAccountId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "wholesalerAccountId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"WholesalerRegistryService/v1\"));",
+      "purpose": "Ensure distributor account credentials are securely bound to request maps before calling the registration service."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "MarketShareComplianceService",
+      "target_version": "v1",
+      "input_parameters": ["formularyDrugId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"formularyDrugId\")) { data.getRequestData().put(\"formularyDrugId\", formularyDrugId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "formularyDrugId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"MarketShareComplianceService/v1\"));",
+      "purpose": "Ensure product identifying tokens are bound to request maps prior to pulling compliance performance profiles."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RebateThresholdMatrix",
+      "filter_name": "byFormularyDrugId",
+      "where_clause_parameters": ["formularyDrugId"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "formularyDrugId"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "formulary_drug_id", "max_rebate_percentage", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> thresholdParams = com.google.common.collect.ArrayListMultimap.create(); thresholdParams.put(\"formularyDrugId\", formularyDrugId); context.streamDataFromDB(\"RebateThresholdMatrix\", \"byFormularyDrugId\", thresholdParams, record -> { thresholdUuidHolder[0] = String.valueOf(record.get(\"uuid\")); rebatePercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_rebate_percentage\"))); });",
+      "purpose": "Fetch drug specific percentage restrictions using an ArrayListMultimap structure to capture records and system uuids."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RegionalTaxSurcharge",
+      "filter_name": "byMarketTierCode",
+      "where_clause_parameters": ["market_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "MarketShareCompliance",
+          "extracted_field": "marketTierCode",
+          "mapped_to_where_parameter": "market_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "market_tier_code", "tax_surcharge_percentage", "jurisdiction_iso_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"market_tier_code\", marketTierCode); context.streamDataFromDB(\"RegionalTaxSurcharge\", \"byMarketTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically fetch local tax parameters utilizing downstream compliance variables extracted during Step 2 processing loops."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "distributor contract status is breach or extreme volume variance patterns detected",
+      "trigger_microservice": "ContractReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["formularyDrugId", "wholesalerAccountId", "extremeVolumeVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeVolumeVariancePatterns\")) { data.getRequestData().put(\"extremeVolumeVariancePatterns\", extremeVolumeVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "MarketShareCompliance",
+          "extracted_field": "extremeVolumeVarianceFlag",
+          "mapped_to_input_parameter": "extremeVolumeVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ContractReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "RebateThresholdMatrix",
+          "operation": "update",
+          "source_of_uuid": "RebateThresholdMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "RebateThresholdMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "REBATE_HOLD",
+            "processing_outcome": "Triggered manual commercial forensic rebate hold via contract protection gates.",
+            "updated_by": "RebateAllocationService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "MarketShareComplianceService/v1",
+        "mock_outputs": {
+          "happy_path": { "contractStatus": "ACTIVE", "marketTierCode": "TIER_1", "extremeVolumeVarianceFlag": false },
+          "breach_profile": { "contractStatus": "BREACH", "marketTierCode": "TIER_5", "extremeVolumeVarianceFlag": false },
+          "variance_detected": { "contractStatus": "ACTIVE", "marketTierCode": "TIER_5", "extremeVolumeVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:RebateThresholdMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-555-eee", "formulary_drug_id": "DRUG-101", "max_rebate_percentage": 0.15, "adjudication_status": "UNPROCESSED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing regional volume structural properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies program processing routes directly to commercial review boards when volume changes breach contract threshold constraints.",
+        "given_request_data": { "wholesalerAccountId": "WHL-808", "totalPurchaseVolume": 500000.00, "formularyDrugId": "DRUG-101" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ContractReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "RebateThresholdMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-555-eee",
+                "adjudication_status": "REBATE_HOLD",
+                "updated_by": "RebateAllocationService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_CONTRACT_BREACH_ROUTE",
+        "description": "Verifies that a distributor configuration state of BREACH triggers identical volume mitigation lockdown rules.",
+        "given_request_data": { "wholesalerAccountId": "WHL-808", "totalPurchaseVolume": 500000.00, "formularyDrugId": "DRUG-101" },
+        "simulated_profiles": ["breach_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ContractReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "RebateThresholdMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-555-eee",
+                "adjudication_status": "REBATE_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

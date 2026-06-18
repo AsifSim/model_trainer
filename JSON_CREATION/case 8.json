@@ -1,0 +1,170 @@
+{
+  "microservice_name": "cu_ms_select_design_config_part_update",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "short_part_number",
+      "data_type": "String",
+      "extraction_path": "String short_part_number = (String) data.getRequestData().get(\"short_part_number\");",
+      "purpose": "Extract the master component code used to anchor the multi-table configuration stream joins."
+    },
+    {
+      "field_name": "uuid",
+      "data_type": "String",
+      "extraction_path": "String uuid = (String) data.getRequestData().get(\"uuid\");",
+      "purpose": "Extract the internal record tracking tracking token to append to the response payload."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "APPLICATION_STREAM_JOIN",
+      "target_entity": "cu_esn_bom_option_config_notes",
+      "secondary_entity": "cu_wc_option_child",
+      "filter_name": "byChildPartNumberMatch",
+      "where_clause_parameters": ["short_part_number"],
+      "columns_to_fetch": ["design_config_num"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> joinParams = com.google.common.collect.ArrayListMultimap.create(); joinParams.put(\"child_part\", short_part_number); context.streamJoinData(\"cu_esn_bom_option_config_notes\", \"cu_wc_option_child\", \"option_assembly_num\", \"rev_option_no\", joinParams, record -> { distinctConfigs.add(String.valueOf(record.get(\"design_config_num\"))); });",
+      "purpose": "Stream distinct design blueprint tokens via a dynamic cross-entity join matching component option revision definitions."
+    },
+    {
+      "step_number": 2,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config_notes",
+      "filter_name": "calculateTotalSerialVolume",
+      "where_clause_parameters": ["design_config_num_list"],
+      "columns_to_fetch": ["design_config_num", "engine_serial_num"],
+      "code_snippet": "for(String cfg : distinctConfigs) { int totalVolume = context.executeCountQuery(\"cu_esn_bom_option_config_notes\", \"countSerialsByConfig\", cfg); volumeMap.put(cfg, totalVolume); } List<Map.Entry<String, Integer>> topThree = volumeMap.entrySet().stream().sorted(Map.Entry.<String, Integer>comparingByValue().reversed()).limit(3).collect(Collectors.toList());",
+      "purpose": "Compute cumulative manufacturing asset counts per design key to identify the top three high-volume configurations."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config_notes",
+      "filter_name": "evaluateTenYearTimeline",
+      "where_clause_parameters": ["top_1_design_config_num", "cutoff_year"],
+      "columns_to_fetch": ["engine_serial_num"],
+      "code_snippet": "int currentYear = java.util.Calendar.getInstance().get(java.util.Calendar.YEAR); int tenYearCount = context.executeVolumeQuery(\"cu_esn_bom_option_config_notes\", \"byYearCutoff\", topThree.get(0).getKey(), currentYear - 10); if (tenYearCount == 0) { context.triggerExternalService(\"WindchillService\", data); return data; }",
+      "purpose": "Validate historical production viability within a trailing 10-year block, routing to external syncing tools upon null asset recognition."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config_notes",
+      "filter_name": "evaluateHorizonMetrics",
+      "where_clause_parameters": ["top_1_design_config_num", "current_year"],
+      "columns_to_fetch": ["engine_serial_num", "build_year"],
+      "code_snippet": "int recentCount = context.executeHorizonQuery(\"cu_esn_bom_option_config_notes\", \"recentHorizon\", topThree.get(0).getKey(), currentYear - 5); int olderCount = context.executeHorizonQuery(\"cu_esn_bom_option_config_notes\", \"olderHorizon\", topThree.get(0).getKey(), currentYear - 10, currentYear - 5); if (recentCount > olderCount) { finalConfig[0] = topThree.get(0).getKey(); } else { context.triggerExternalService(\"Criteria2Service\", topThree); return data; }",
+      "purpose": "Perform volume delta checks between a five-year and a ten-year manufacturing window to determine active configuration status routing."
+    },
+    {
+      "step_number": 5,
+      "type": "DATABASE_STREAM",
+      "target_entity": "configuration",
+      "filter_name": "bySelectedConfigCode",
+      "where_clause_parameters": ["code"],
+      "columns_to_fetch": ["engine_model", "displacement_liters", "certification_level", "market_application", "engine_type", "fuel_system_type"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> cfgParams = com.google.common.collect.ArrayListMultimap.create(); cfgParams.put(\"code\", finalConfig[0]); context.streamDataFromDB(\"configuration\", \"bySelectedConfigCode\", cfgParams, record -> { resolvedSpecs.putAll(record); });",
+      "purpose": "Resolve six master catalog design dimensions using the dynamically verified primary config code token."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "recent production volume metrics strictly outpace the historical baseline window limits",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "part",
+          "operation": "update",
+          "source_of_uuid": "Request.short_part_number",
+          "fields": {
+            "engine_model": "resolvedSpecs.get(\"engine_model\")",
+            "displacement_liters": "resolvedSpecs.get(\"displacement_liters\")",
+            "certification_level": "resolvedSpecs.get(\"certification_level\")",
+            "market_application": "resolvedSpecs.get(\"market_application\")",
+            "engine_type": "resolvedSpecs.get(\"engine_type\")",
+            "fuel_system_type": "resolvedSpecs.get(\"fuel_system_type\")"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "APPLICATION_STREAM_JOIN:cu_esn_bom_option_config_notes",
+        "mock_outputs": { "blueprints": [{ "design_config_num": "DSN-V8" }, { "design_config_num": "DSN-V12" }] }
+      },
+      {
+        "step_reference": 2,
+        "mock_target": "COUNT_QUERY:cu_esn_bom_option_config_notes",
+        "mock_outputs": { "DSN-V8_vol": 450, "DSN-V12_vol": 120 }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "VOLUME_QUERY:cu_esn_bom_option_config_notes",
+        "mock_outputs": { "active_history": 380, "dead_history": 0 }
+      },
+      {
+        "step_reference": 4,
+        "mock_target": "HORIZON_QUERY:cu_esn_bom_option_config_notes",
+        "mock_outputs": { "happy_horizon": { "recent": 250, "older": 130 }, "stagnant_horizon": { "recent": 100, "older": 280 } }
+      },
+      {
+        "step_reference": 5,
+        "mock_target": "DATABASE_STREAM:configuration",
+        "mock_outputs": { "attributes": { "engine_model": "G3500", "displacement_liters": 14.2, "certification_level": "STAGE_V", "market_application": "POWER_GEN", "engine_type": "GAS", "fuel_system_type": "INJECTION" } }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_RECENT_VOLUME_EXPANSION_PATH",
+        "description": "Verifies successful part master updates when recent configuration volumes exceed older baseline periods.",
+        "given_request_data": { "short_part_number": "PART-400X", "uuid": "u-404-part" },
+        "simulated_profiles": ["blueprints", "DSN-V8_vol", "active_history", "happy_horizon", "attributes"],
+        "assertions": {
+          "persistence_verifications": [
+            {
+              "target_entity": "part",
+              "expected_operation": "update",
+              "expected_fields": {
+                "engine_model": "G3500",
+                "displacement_liters": 14.2,
+                "certification_level": "STAGE_V",
+                "market_application": "POWER_GEN",
+                "engine_type": "GAS",
+                "fuel_system_type": "INJECTION"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_EMPTY_DECADE_WINDCHILL_TRIGGER",
+        "description": "Verifies that an external manufacturing integration trigger is thrown when no active serials exist across a 10-year horizon.",
+        "given_request_data": { "short_part_number": "PART-400X", "uuid": "u-404-part" },
+        "simulated_profiles": ["blueprints", "DSN-V8_vol", "dead_history"],
+        "assertions": {
+          "external_system_calls": [
+            { "expected_service_name": "WindchillService", "payload_contains": ["short_part_number"] }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_STAGNANT_VOLUME_CRITERIA_2_TRIGGER",
+        "description": "Verifies that the system routes processing to a Criteria 2 handler when historical configuration volumes beat recent activity metrics.",
+        "given_request_data": { "short_part_number": "PART-400X", "uuid": "u-404-part" },
+        "simulated_profiles": ["blueprints", "DSN-V8_vol", "active_history", "stagnant_horizon"],
+        "assertions": {
+          "external_system_calls": [
+            { "expected_service_name": "Criteria2Service", "payload_contains": ["DSN-V8"] }
+          ]
+        }
+      }
+    ]
+  }
+}

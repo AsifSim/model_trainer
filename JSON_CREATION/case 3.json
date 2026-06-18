@@ -1,0 +1,186 @@
+{
+  "microservice_name": "cu_ms_esnconfig_upsert",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "design_config_num",
+      "data_type": "String",
+      "extraction_path": "String design_config_num = (String) data.getRequestData().get(\"design_config_num\");",
+      "purpose": "Extracted design configuration blueprint key used to check the asset database for pre-existing configurations."
+    },
+    {
+      "field_name": "engine_serial_num",
+      "data_type": "String",
+      "extraction_path": "String engine_serial_num = (String) data.getRequestData().get(\"engine_serial_num\");",
+      "purpose": "Extracted unique manufacturing serial key utilized for tracking specific equipment assets."
+    },
+    {
+      "field_name": "uuid",
+      "data_type": "String",
+      "extraction_path": "String uuid = (String) data.getRequestData().get(\"uuid\");",
+      "purpose": "Extracted internal database record index used to confirm unique row identity during update executions."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM",
+      "target_entity": "cu_esn_bom_option_config",
+      "filter_name": "byDesignConfigAndSerialNumber",
+      "where_clause_parameters": ["design_config_num", "engine_serial_num"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "design_config_num"
+        },
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "engine_serial_num"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "design_config_num", "engine_serial_num", "created_by", "updated_by"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> searchParams = com.google.common.collect.ArrayListMultimap.create(); searchParams.put(\"design_config_num\", design_config_num); searchParams.put(\"engine_serial_num\", engine_serial_num); context.streamDataFromDB(\"cu_esn_bom_option_config\", \"byDesignConfigAndSerialNumber\", searchParams, record -> { existingConfigRecords.add(record); });",
+      "purpose": "Query and stream existing technical records matching the combined design blueprint key and equipment serial parameters."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "the database stream returns zero matching records for the specified design blueprint and serial number keys",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "input_parameters": ["design_config_num", "engine_serial_num"],
+      "parameter_injection_guard": "// Initializing missing engine asset creation scripts",
+      "data_dependencies": [],
+      "code_snippet": "// Executed natively by system transactional persistence layers",
+      "persistence_actions": [
+        {
+          "entity": "cu_esn_bom_option_config",
+          "operation": "insert",
+          "source_of_uuid": "AUTO_GENERATED",
+          "data_dependencies": [],
+          "fields": {
+            "design_config_num": "Request.design_config_num",
+            "engine_serial_num": "Request.engine_serial_num",
+            "created_by": "Commercial Exit",
+            "created_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    },
+    {
+      "condition": "the database stream detects one or more matching records possessing a valid unique record tracking identifier",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE",
+      "target_version": "v1",
+      "input_parameters": ["uuid"],
+      "parameter_injection_guard": "// Initializing system data modification routines",
+      "data_dependencies": [],
+      "code_snippet": "// Loops through matching records; skips any row missing an explicit unique key identifier",
+      "persistence_actions": [
+        {
+          "entity": "cu_esn_bom_option_config",
+          "operation": "update",
+          "source_of_uuid": "streamed_record_identifier",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 1,
+              "source_entity": "cu_esn_bom_option_config",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "updated_by": "Commercial Exit",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:cu_esn_bom_option_config",
+        "mock_outputs": {
+          "empty_catalog": [],
+          "single_match": [{ "uuid": "row-id-4041", "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500" }],
+          "multi_match_dirty": [
+            { "uuid": "row-id-9001", "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500" },
+            { "uuid": null, "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500" },
+            { "uuid": "row-id-9003", "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500" }
+          ]
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_ENGINE_RECORD_CREATION",
+        "description": "Verifies that an insert operation is executed with proper metadata when no matching record is found.",
+        "given_request_data": { "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500", "uuid": "req-id-01" },
+        "simulated_profiles": ["empty_catalog"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "cu_esn_bom_option_config",
+              "expected_operation": "insert",
+              "expected_fields": {
+                "design_config_num": "D-CFG-77",
+                "engine_serial_num": "ESN-500",
+                "created_by": "Commercial Exit"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_002_STANDARD_RECORD_UPDATE",
+        "description": "Verifies that discovering a single explicit match on design and serial attributes triggers a standard metadata overwrite.",
+        "given_request_data": { "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500", "uuid": "req-id-02" },
+        "simulated_profiles": ["single_match"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "cu_esn_bom_option_config",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "row-id-4041",
+                "updated_by": "Commercial Exit"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_BATCH_CLEANUP_AND_SKIP",
+        "description": "Verifies that all valid rows are updated during multi-match events while rows lacking a clean identifier are bypassed.",
+        "given_request_data": { "design_config_num": "D-CFG-77", "engine_serial_num": "ESN-500", "uuid": "req-id-03" },
+        "simulated_profiles": ["multi_match_dirty"],
+        "assertions": {
+          "microservice_invocations": [],
+          "persistence_verifications": [
+            {
+              "target_entity": "cu_esn_bom_option_config",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "row-id-9001",
+                "updated_by": "Commercial Exit"
+              }
+            },
+            {
+              "target_entity": "cu_esn_bom_option_config",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "row-id-9003",
+                "updated_by": "Commercial Exit"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

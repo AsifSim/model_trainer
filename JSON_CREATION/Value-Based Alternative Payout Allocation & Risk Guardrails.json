@@ -1,0 +1,206 @@
+{
+  "microservice_name": "ValueBasedPayoutService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "acoOrganizationId",
+      "data_type": "String",
+      "extraction_path": "String acoOrganizationId = (String) data.getRequestData().get(\"acoOrganizationId\");",
+      "purpose": "Extracted primary corporate key for locating organization registry boundaries."
+    },
+    {
+      "field_name": "grossSharedSavingsBaseline",
+      "data_type": "Double",
+      "extraction_path": "Double grossSharedSavingsBaseline = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossSharedSavingsBaseline\")));",
+      "purpose": "Extracted gross baseline financial metric utilized for performance payout calculation updates."
+    },
+    {
+      "field_name": "performanceMeasurementToken",
+      "data_type": "String",
+      "extraction_path": "String performanceMeasurementToken = (String) data.getRequestData().get(\"performanceMeasurementToken\");",
+      "purpose": "Extracted metrics identifier used for database optimization matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "AcoContractRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["acoOrganizationId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"acoOrganizationId\")) { data.getRequestData().put(\"acoOrganizationId\", acoOrganizationId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "acoOrganizationId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"AcoContractRegistryService/v1\"));",
+      "purpose": "Ensure organization identification attributes are safely bound to the outbound map context before executing registry metrics checks."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "QualityScoreEfficacyService",
+      "target_version": "v1",
+      "input_parameters": ["performanceMeasurementToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"performanceMeasurementToken\")) { data.getRequestData().put(\"performanceMeasurementToken\", performanceMeasurementToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "performanceMeasurementToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"QualityScoreEfficacyService/v1\"));",
+      "purpose": "Ensure measurement tokens are packaged into outbound maps prior to querying core provider performance classification listings."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "AcoPerformanceMatrix",
+      "filter_name": "byPerformanceMeasurementToken",
+      "where_clause_parameters": ["performanceMeasurementToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "performanceMeasurementToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "performance_measurement_token", "max_shared_savings_rate", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> matrixParams = com.google.common.collect.ArrayListMultimap.create(); matrixParams.put(\"performanceMeasurementToken\", performanceMeasurementToken); context.streamDataFromDB(\"AcoPerformanceMatrix\", \"byPerformanceMeasurementToken\", matrixParams, record -> { matrixUuidHolder[0] = String.valueOf(record.get(\"uuid\")); savingsRateHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_shared_savings_rate\"))); });",
+      "purpose": "Stream individual performance parameters using an ArrayListMultimap query container to capture records and unique primary keys."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "StateRegulatoryTaxSurcharge",
+      "filter_name": "byClinicalPerformanceTierCode",
+      "where_clause_parameters": ["clinical_performance_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "QualityScoreEfficacy",
+          "extracted_field": "clinicalPerformanceTierCode",
+          "mapped_to_where_parameter": "clinical_performance_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "clinical_performance_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"clinical_performance_tier_code\", clinicalPerformanceTierCode); context.streamDataFromDB(\"StateRegulatoryTaxSurcharge\", \"byClinicalPerformanceTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically pull local regulatory tax variables utilizing downstream parameters extracted during the Step 2 scoring sequence."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "provider contract status is default or extreme spend variance patterns detected",
+      "trigger_microservice": "ActuarialComplianceService",
+      "target_version": "v1",
+      "input_parameters": ["performanceMeasurementToken", "acoOrganizationId", "extremeSpendVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeSpendVariancePatterns\")) { data.getRequestData().put(\"extremeSpendVariancePatterns\", extremeSpendVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "QualityScoreEfficacy",
+          "extracted_field": "extremeSpendVarianceFlag",
+          "mapped_to_input_parameter": "extremeSpendVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ActuarialComplianceService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "AcoPerformanceMatrix",
+          "operation": "update",
+          "source_of_uuid": "AcoPerformanceMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "AcoPerformanceMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "PERFORMANCE_HOLD",
+            "processing_outcome": "Triggered manual actuarial protection hold via clinical audit threshold gates.",
+            "updated_by": "ValueBasedPayoutService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "QualityScoreEfficacyService/v1",
+        "mock_outputs": {
+          "happy_path": { "contractStatus": "ACTIVE", "clinicalPerformanceTierCode": "TIER_1_OPTIMAL", "extremeSpendVarianceFlag": false },
+          "default_profile": { "contractStatus": "DEFAULT", "clinicalPerformanceTierCode": "TIER_4_SUBSTANDARD", "extremeSpendVarianceFlag": false },
+          "variance_detected": { "contractStatus": "ACTIVE", "clinicalPerformanceTierCode": "TIER_4_SUBSTANDARD", "extremeSpendVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:AcoPerformanceMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-111-iii", "performance_measurement_token": "METRIC-VBC-2026", "max_shared_savings_rate": 0.22, "adjudication_status": "UNSETTLED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing strategic payout initialization metrics.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies execution flow pivots flawlessly to actuarial compliance when savings metrics trigger risk parameters.",
+        "given_request_data": { "acoOrganizationId": "ACO-GROUP-77", "grossSharedSavingsBaseline": 850000.00, "performanceMeasurementToken": "METRIC-VBC-2026" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialComplianceService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "AcoPerformanceMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-111-iii",
+                "adjudication_status": "PERFORMANCE_HOLD",
+                "updated_by": "ValueBasedPayoutService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_CONTRACT_DEFAULT_ROUTE",
+        "description": "Verifies that an enterprise contract registry status of DEFAULT activates the corresponding ledger restriction patterns.",
+        "given_request_data": { "acoOrganizationId": "ACO-GROUP-77", "grossSharedSavingsBaseline": 850000.00, "performanceMeasurementToken": "METRIC-VBC-2026" },
+        "simulated_profiles": ["default_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ActuarialComplianceService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "AcoPerformanceMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-111-iii",
+                "adjudication_status": "PERFORMANCE_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

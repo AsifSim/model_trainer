@@ -1,0 +1,206 @@
+{
+  "microservice_name": "ProviderReimbursementService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "networkFacilityId",
+      "data_type": "String",
+      "extraction_path": "String networkFacilityId = (String) data.getRequestData().get(\"networkFacilityId\");",
+      "purpose": "Extracted primary search key for fetching facility account contract limits."
+    },
+    {
+      "field_name": "grossInvoiceAmount",
+      "data_type": "Double",
+      "extraction_path": "Double grossInvoiceAmount = Double.parseDouble(String.valueOf(data.getRequestData().get(\"grossInvoiceAmount\")));",
+      "purpose": "Extracted baseline billing handle utilized for downstream fee adjustments."
+    },
+    {
+      "field_name": "procedureBillingCode",
+      "data_type": "String",
+      "extraction_path": "String procedureBillingCode = (String) data.getRequestData().get(\"procedureBillingCode\");",
+      "purpose": "Extracted procedure token utilized for database contract matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "FacilityContractRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["networkFacilityId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"networkFacilityId\")) { data.getRequestData().put(\"networkFacilityId\", networkFacilityId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "networkFacilityId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"FacilityContractRegistryService/v1\"));",
+      "purpose": "Ensure facility credentials are securely bound to request maps before calling the provider contract service."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "ClinicalComplianceService",
+      "target_version": "v1",
+      "input_parameters": ["procedureBillingCode"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"procedureBillingCode\")) { data.getRequestData().put(\"procedureBillingCode\", procedureBillingCode); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "procedureBillingCode"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ClinicalComplianceService/v1\"));",
+      "purpose": "Ensure procedure identifying tokens are bound to request maps prior to pulling medical necessity profiles."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "ReimbursementCapMatrix",
+      "filter_name": "byProcedureBillingCode",
+      "where_clause_parameters": ["procedureBillingCode"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "procedureBillingCode"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "procedure_billing_code", "max_reimbursement_cap_amount", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> capParams = com.google.common.collect.ArrayListMultimap.create(); capParams.put(\"procedureBillingCode\", procedureBillingCode); context.streamDataFromDB(\"ReimbursementCapMatrix\", \"byProcedureBillingCode\", capParams, record -> { capUuidHolder[0] = String.valueOf(record.get(\"uuid\")); maxCapHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_reimbursement_cap_amount\"))); });",
+      "purpose": "Fetch specific procedure pricing restrictions using an ArrayListMultimap structure to capture records and system uuids."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "RegionalRegulatorySurcharge",
+      "filter_name": "byClinicalTierCode",
+      "where_clause_parameters": ["clinical_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "ClinicalCompliance",
+          "extracted_field": "clinicalTierCode",
+          "mapped_to_where_parameter": "clinical_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "clinical_tier_code", "tax_surcharge_percentage", "jurisdiction_iso_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"clinical_tier_code\", clinicalTierCode); context.streamDataFromDB(\"RegionalRegulatorySurcharge\", \"byClinicalTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically fetch state or regional fee parameters utilizing downstream variables extracted during Step 2 processing loops."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "facility contract status is suspended or extreme bill-code variance patterns detected",
+      "trigger_microservice": "ClinicalAuditReviewBoardService",
+      "target_version": "v1",
+      "input_parameters": ["procedureBillingCode", "networkFacilityId", "extremeVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeVariancePatterns\")) { data.getRequestData().put(\"extremeVariancePatterns\", extremeVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "ClinicalCompliance",
+          "extracted_field": "extremeVarianceFlag",
+          "mapped_to_input_parameter": "extremeVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ClinicalAuditReviewBoardService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "ReimbursementCapMatrix",
+          "operation": "update",
+          "source_of_uuid": "ReimbursementCapMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "ReimbursementCapMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "REIMBURSEMENT_HOLD",
+            "processing_outcome": "Triggered manual clinical forensic audit hold via variance protection gates.",
+            "updated_by": "ProviderReimbursementService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "ClinicalComplianceService/v1",
+        "mock_outputs": {
+          "happy_path": { "contractStatus": "ACTIVE", "clinicalTierCode": "LEVEL_2", "extremeVarianceFlag": false },
+          "suspended_profile": { "contractStatus": "SUSPENDED", "clinicalTierCode": "LEVEL_5", "extremeVarianceFlag": false },
+          "variance_detected": { "contractStatus": "ACTIVE", "clinicalTierCode": "LEVEL_5", "extremeVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:ReimbursementCapMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-666-ddd", "procedure_billing_code": "CPT-99214", "max_reimbursement_cap_amount": 185.00, "adjudication_status": "UNAUDITED" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing regional reimbursement structural properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies program processing routes directly to clinical boards when billing codes breach compliance threshold constraints.",
+        "given_request_data": { "networkFacilityId": "FAC-404", "grossInvoiceAmount": 12500.00, "procedureBillingCode": "CPT-99214" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ClinicalAuditReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "ReimbursementCapMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-666-ddd",
+                "adjudication_status": "REIMBURSEMENT_HOLD",
+                "updated_by": "ProviderReimbursementService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_SUSPENDED_CONTRACT_ROUTE",
+        "description": "Verifies that a provider registry state of SUSPENDED triggers identical billing mitigation lockdown rules.",
+        "given_request_data": { "networkFacilityId": "FAC-404", "grossInvoiceAmount": 12500.00, "procedureBillingCode": "CPT-99214" },
+        "simulated_profiles": ["suspended_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ClinicalAuditReviewBoardService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "ReimbursementCapMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-666-ddd",
+                "adjudication_status": "REIMBURSEMENT_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

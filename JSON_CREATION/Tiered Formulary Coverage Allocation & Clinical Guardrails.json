@@ -1,0 +1,206 @@
+{
+  "microservice_name": "FormularyCoverageService",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "request_data_extractions": [
+    {
+      "field_name": "carrierAccountId",
+      "data_type": "String",
+      "extraction_path": "String carrierAccountId = (String) data.getRequestData().get(\"carrierAccountId\");",
+      "purpose": "Extracted primary corporate key for locating group insurance tier boundaries."
+    },
+    {
+      "field_name": "ingredientCostBaseline",
+      "data_type": "Double",
+      "extraction_path": "Double ingredientCostBaseline = Double.parseDouble(String.valueOf(data.getRequestData().get(\"ingredientCostBaseline\")));",
+      "purpose": "Extracted gross baseline financial metric utilized for tier coverage calculation updates."
+    },
+    {
+      "field_name": "productStockKeepingToken",
+      "data_type": "String",
+      "extraction_path": "String productStockKeepingToken = (String) data.getRequestData().get(\"productStockKeepingToken\");",
+      "purpose": "Extracted product identifier used for database formulary matrix cross-referencing."
+    }
+  ],
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "CarrierContractRegistryService",
+      "target_version": "v1",
+      "input_parameters": ["carrierAccountId"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"carrierAccountId\")) { data.getRequestData().put(\"carrierAccountId\", carrierAccountId); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "carrierAccountId"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"CarrierContractRegistryService/v1\"));",
+      "purpose": "Ensure carrier identification attributes are safely bound to the outbound map context before executing corporate registry checks."
+    },
+    {
+      "step_number": 2,
+      "type": "MICROSERVICE_CALL",
+      "target_microservice": "TherapeuticEfficacyService",
+      "target_version": "v1",
+      "input_parameters": ["productStockKeepingToken"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"productStockKeepingToken\")) { data.getRequestData().put(\"productStockKeepingToken\", productStockKeepingToken); }",
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "productStockKeepingToken"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"TherapeuticEfficacyService/v1\"));",
+      "purpose": "Ensure product stock tokens are packaged into outbound maps prior to querying core therapeutic efficacy tier listings."
+    },
+    {
+      "step_number": 3,
+      "type": "DATABASE_STREAM",
+      "target_entity": "FormularyTierMatrix",
+      "filter_name": "byProductStockKeepingToken",
+      "where_clause_parameters": ["productStockKeepingToken"],
+      "data_dependencies": [
+        {
+          "type": "REQUEST_DATA",
+          "field_name": "productStockKeepingToken"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "product_stock_keeping_token", "max_tier_discount_rate", "adjudication_status"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> matrixParams = com.google.common.collect.ArrayListMultimap.create(); matrixParams.put(\"productStockKeepingToken\", productStockKeepingToken); context.streamDataFromDB(\"FormularyTierMatrix\", \"byProductStockKeepingToken\", matrixParams, record -> { matrixUuidHolder[0] = String.valueOf(record.get(\"uuid\")); discountRateHolder[0] = Double.parseDouble(String.valueOf(record.get(\"max_tier_discount_rate\"))); });",
+      "purpose": "Stream individual formulary tier limits using an ArrayListMultimap query container to capture records and unique primary keys."
+    },
+    {
+      "step_number": 4,
+      "type": "DATABASE_STREAM",
+      "target_entity": "StateRegulatorySurcharge",
+      "filter_name": "byClinicalTierCode",
+      "where_clause_parameters": ["clinical_tier_code"],
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "TherapeuticEfficacy",
+          "extracted_field": "clinicalTierCode",
+          "mapped_to_where_parameter": "clinical_tier_code"
+        }
+      ],
+      "columns_to_fetch": ["uuid", "clinical_tier_code", "tax_surcharge_percentage", "jurisdiction_code"],
+      "code_snippet": "com.google.common.collect.Multimap<String, Object> taxParams = com.google.common.collect.ArrayListMultimap.create(); taxParams.put(\"clinical_tier_code\", clinicalTierCode); context.streamDataFromDB(\"StateRegulatorySurcharge\", \"byClinicalTierCode\", taxParams, record -> { taxPercentageHolder[0] = Double.parseDouble(String.valueOf(record.get(\"tax_surcharge_percentage\"))); });",
+      "purpose": "Dynamically pull local regulatory tax variables utilizing downstream parameters extracted during the Step 2 profiling sequence."
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "corporate carrier status is suspended or extreme spend variance patterns detected",
+      "trigger_microservice": "ClinicalPriorAuthorizationService",
+      "target_version": "v1",
+      "input_parameters": ["productStockKeepingToken", "carrierAccountId", "extremeSpendVariancePatterns"],
+      "parameter_injection_guard": "if (!data.getRequestData().containsKey(\"extremeSpendVariancePatterns\")) { data.getRequestData().put(\"extremeSpendVariancePatterns\", extremeSpendVariancePatterns); }",
+      "data_dependencies": [
+        {
+          "type": "STEP_OUTPUT",
+          "source_step": 2,
+          "source_entity": "TherapeuticEfficacy",
+          "extracted_field": "extremeSpendVarianceFlag",
+          "mapped_to_input_parameter": "extremeSpendVariancePatterns"
+        }
+      ],
+      "code_snippet": "context.executeFunction(data, FunctionIdentifier.withFunctionIdentifier(\"ClinicalPriorAuthorizationService/v1\"));",
+      "persistence_actions": [
+        {
+          "entity": "FormularyTierMatrix",
+          "operation": "update",
+          "source_of_uuid": "FormularyTierMatrix_streamed_record",
+          "data_dependencies": [
+            {
+              "type": "STEP_OUTPUT",
+              "source_step": 3,
+              "source_entity": "FormularyTierMatrix_streamed_record",
+              "extracted_field": "uuid"
+            }
+          ],
+          "fields": {
+            "adjudication_status": "FORMULARY_HOLD",
+            "processing_outcome": "Triggered manual medical prior authorization hold via risk management gates.",
+            "updated_by": "FormularyCoverageService",
+            "updated_date": "CURRENT_OFFSET_DATE_TIME"
+          }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 2,
+        "mock_target": "TherapeuticEfficacyService/v1",
+        "mock_outputs": {
+          "happy_path": { "contractStatus": "ACTIVE", "clinicalTierCode": "GENERIC_PREFERRED", "extremeSpendVarianceFlag": false },
+          "suspended_profile": { "contractStatus": "SUSPENDED", "clinicalTierCode": "BRAND_NON_PREFERRED", "extremeSpendVarianceFlag": false },
+          "variance_detected": { "contractStatus": "ACTIVE", "clinicalTierCode": "BRAND_NON_PREFERRED", "extremeSpendVarianceFlag": true }
+        }
+      },
+      {
+        "step_reference": 3,
+        "mock_target": "DATABASE_STREAM:FormularyTierMatrix",
+        "mock_outputs": {
+          "standard_row": { "uuid": "mock-uuid-222-hhh", "product_stock_keeping_token": "SKU-990-BIOLOGIC", "max_tier_discount_rate": 0.40, "adjudication_status": "PENDING" }
+        }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_MISSING_MANDATORY_INPUTS",
+        "description": "Validation testing for missing regional initialization contract properties.",
+        "given_request_data": {},
+        "expected_behavior": "THROWS_EXCEPTION_OR_HALTS"
+      },
+      {
+        "scenario_id": "TC_002_EXTREME_VARIANCE_ROUTE",
+        "description": "Verifies execution flow pivots flawlessly to authorization systems when drug metrics breach threshold caps.",
+        "given_request_data": { "carrierAccountId": "CARR-909", "ingredientCostBaseline": 4200.00, "productStockKeepingToken": "SKU-990-BIOLOGIC" },
+        "simulated_profiles": ["variance_detected", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ClinicalPriorAuthorizationService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "FormularyTierMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-222-hhh",
+                "adjudication_status": "FORMULARY_HOLD",
+                "updated_by": "FormularyCoverageService"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "scenario_id": "TC_003_SUSPENDED_CONTRACT_ROUTE",
+        "description": "Verifies that a corporate registry contract status of SUSPENDED activates the matching portfolio lock rules.",
+        "given_request_data": { "carrierAccountId": "CARR-909", "ingredientCostBaseline": 4200.00, "productStockKeepingToken": "SKU-990-BIOLOGIC" },
+        "simulated_profiles": ["suspended_profile", "standard_row"],
+        "assertions": {
+          "microservice_invocations": [
+            { "microservice": "ClinicalPriorAuthorizationService/v1", "expected_calls": 1 }
+          ],
+          "persistence_verifications": [
+            {
+              "target_entity": "FormularyTierMatrix",
+              "expected_operation": "update",
+              "expected_fields": {
+                "uuid": "mock-uuid-222-hhh",
+                "adjudication_status": "FORMULARY_HOLD"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
