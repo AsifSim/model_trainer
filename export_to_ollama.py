@@ -1,7 +1,7 @@
 from unsloth import FastLanguageModel
 
 # Point this exactly to your completed training checkpoint folder
-MODEL_PATH = "output/checkpoint-90" # Or "output/checkpoint-20" depending on your last run folder name
+MODEL_PATH = "output/checkpoint-60" # Or "output/checkpoint-20" depending on your last run folder name
 MAX_SEQ_LENGTH = 8192
 
 print("🔄 Loading your local fine-tuned checkpoint...")
