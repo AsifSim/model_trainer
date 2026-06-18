@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "unsloth/Llama-3.2-3B-Instruct-bnb-4bit"
 # MODEL_NAME = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
 # "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
+# MODEL_NAME = "unsloth/gemma-3-4b-it-bnb-4bit"
 MAX_SEQ_LENGTH = 8192
 
 
@@ -55,15 +56,32 @@ def load_model():
         model.generation_config.pad_token_id = tokenizer.eos_token_id
 
     logger.info("Applying LoRA adapters")
+    # model = FastLanguageModel.get_peft_model(
+    #     model,
+    #     r=32,
+    #     lora_alpha=32,
+    #     lora_dropout=0,
+    #     bias="none",
+    #     target_modules=[
+    #         "q_proj", "k_proj", "v_proj", "o_proj",
+    #         "gate_proj", "up_proj", "down_proj"
+    #     ]
+    # )
+
     model = FastLanguageModel.get_peft_model(
         model,
-        r=32,
-        lora_alpha=32,
+        r=64,
+        lora_alpha=128,
         lora_dropout=0,
         bias="none",
         target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj"
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
         ]
     )
 
@@ -107,15 +125,18 @@ def build_trainer(model, tokenizer, dataset):
         args=SFTConfig(
             output_dir="output",
             dataset_text_field="text",
-            packing=False,  
-            num_train_epochs=5,
-            learning_rate=1e-4,
+            packing=False,
+            num_train_epochs=20,
+            learning_rate=2e-4,
+            warmup_ratio=0.05,
+            weight_decay=0.01,
             per_device_train_batch_size=1,
             gradient_accumulation_steps=16,
             logging_steps=10,
             save_steps=100,
+            save_strategy="steps",
             max_length=MAX_SEQ_LENGTH,
-            bf16=True
+            bf16=True,
         )
     )
 
