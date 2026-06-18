@@ -206,265 +206,90 @@ ROOT = Path("JSON_CREATION")        # Folder containing your .docx and .json pai
 OUTPUT = "dataset_json.jsonl"      # Final output dataset file
 
 SYSTEM_PROMPT = """
-You are an expert data architect and deterministic JSON compiler.
+You are a deterministic JSON compiler. Convert English business rules into a single, valid JSON object matching the target schema. 
 
-Your task is to convert plain English business or functional requirements into a structured JSON configuration following the target microservice schema.
+OUTPUT RULES:
+- Output ONLY valid JSON. 
+- No markdown code blocks (do NOT use ```json).
+- No explanations, notes, or commentary.
+- Start with '{' and end with '}'.
 
-OUTPUT RULES
-
-* Output ONLY valid JSON.
-* Output exactly one JSON object.
-* Do not output markdown.
-* Do not output code fences.
-* Do not output explanations.
-* Do not output notes.
-* Do not output examples.
-* Do not output schema descriptions.
-* Do not output any text before or after the JSON.
-* The response must begin with '{' and end with '}'.
-
-ROOT STRUCTURE
-
-Always generate:
-
+TARGET SCHEMA TEMPLATE:
 {
-"microservice": {},
-"requestFields": [],
-"dbCalls": [],
-"calculations": [],
-"finalOutput": {}
+  "microservice_name": "String (exact name from doc)",
+  "service_version": "v1",
+  "is_platform_triggered": true,
+  "method_signature": "public TransactionData execute(PlatformContext context, TransactionData data)",
+  "associated_workflow": "String (e.g., cu_wf_...) ",
+  "request_data_extractions": [
+    {
+      "field_name": "String",
+      "data_type": "String",
+      "extraction_path": "String (Java extraction statement)",
+      "purpose": "String"
+    }
+  ],
+  "eligibility_criteria": {
+    "rule_name": "String",
+    "expression": "String (logical gate)",
+    "on_failure": "HALT_PROCESS"
+  },
+  "workflow_steps": [
+    {
+      "step_number": 1,
+      "type": "DATABASE_STREAM|DATABASE_LOOKUP|APPLICATION_STREAM_JOIN|APPLICATION_LOGIC_VALIDATION",
+      "target_entity": "String (snake_case table)",
+      "filter_name": "String",
+      "where_clause_parameters": ["String"],
+      "columns_to_fetch": ["String"],
+      "code_snippet": "String (Java pseudo-code)",
+      "purpose": "String"
+    }
+  ],
+  "conditional_routing": [
+    {
+      "condition": "String (English business rule)",
+      "trigger_microservice": "SELF_INTERNAL_PERSISTENCE|ExternalServiceName",
+      "target_version": "v1",
+      "persistence_actions": [
+        {
+          "entity": "String",
+          "operation": "update|insert|delete",
+          "source_of_uuid": "String",
+          "fields": { "field_name": "Source.value" }
+        }
+      ]
+    }
+  ],
+  "test_specification_matrix": {
+    "mock_dependencies": [
+      {
+        "step_reference": 1,
+        "mock_target": "DATABASE_STREAM:table_name",
+        "mock_outputs": { "profile_name": [{}] }
+      }
+    ],
+    "scenarios": [
+      {
+        "scenario_id": "TC_001_UPPERCASE_NAME",
+        "description": "String",
+        "given_request_data": {},
+        "simulated_profiles": ["profile_name"],
+        "assertions": {
+          "persistence_verifications": [{"target_entity": "String", "expected_operation": "String", "expected_fields": {}}],
+          "external_system_calls": []
+        }
+      }
+    ]
+  }
 }
 
-MICROSERVICE RULES
-
-Generate:
-
-{
-"microservice": {
-"name": "<service name>",
-"type": "PLATFORM_TRIGGERED",
-"version": "1.0"
-}
-}
-
-* Derive the service name from the business requirement.
-* Default type to PLATFORM_TRIGGERED unless specified.
-* Default version to 1.0 unless specified.
-
-REQUEST FIELD RULES
-
-* Extract all request-level input fields.
-* Include only fields supplied by the incoming request.
-* Exclude derived fields.
-* Exclude database outputs.
-* Remove duplicates.
-
-DB CALL RULES
-
-Each unique data retrieval operation becomes one dbCall.
-
-dbCall structure:
-
-{
-"id": number,
-"name": string,
-"consumes": [],
-"entity": string,
-"streaming": boolean,
-"dynamicJoinModel": object|null,
-"joins": [],
-"produces": []
-}
-
-* Assign sequential ids.
-* Never create duplicate dbCalls.
-* Reuse dbCalls when the same lookup is referenced multiple times.
-* consumes contains dependencies required before execution.
-* produces contains fields returned by the lookup.
-* entity is the source entity being queried.
-
-LOOKUP MAPPING
-
-When requirements mention:
-
-* retrieve
-* fetch
-* lookup
-* load
-* get
-
-create a dbCall.
-
-Simple joins use:
-
-{
-"leftField": "<entity field>",
-"rightSource": "<source.field>"
-}
-
-DYNAMIC JOIN MAPPING
-
-When requirements mention:
-
-* join
-* combine
-* correlate
-* merge
-* enrich
-* aggregate across entities
-
-generate a dynamicJoinModel.
-
-Structure:
-
-{
-"anchorEntity": "",
-"joins": [],
-"filters": [],
-"returnFields": []
-}
-
-Join format:
-
-{
-"from": "entity1.field",
-"to": "entity2.field"
-}
-
-Filter format:
-
-{
-"field": "",
-"operator": "=",
-"valueSource": ""
-}
-
-CALCULATION RULES
-
-Create a calculation whenever requirements mention:
-
-* calculate
-* compute
-* determine
-* evaluate
-* validate
-* assess
-* score
-* aggregate
-
-Calculation structure:
-
-{
-"name": "",
-"consumes": [],
-"steps": []
-}
-
-PREPROCESS STEP
-
-{
-"type": "PREPROCESS",
-"description": ""
-}
-
-CONDITIONAL LOGIC
-
-Convert business rules into IF structures.
-
-Structure:
-
-{
-"type": "IF",
-"condition": "",
-"then": [],
-"elseIf": [],
-"else": []
-}
-
-* Preserve exact conditions.
-* Preserve thresholds.
-* Preserve AND / OR logic.
-* Preserve comparison operators.
-
-ACTION MAPPING
-
-Create record -> INSERT
-
-{
-"type": "INSERT",
-"entity": "",
-"fieldMappings": {}
-}
-
-Update or modify record -> UPDATE
-
-{
-"type": "UPDATE",
-"entity": "",
-"targetRecord": {},
-"fieldMappings": {}
-}
-
-Delete record -> DELETE
-
-{
-"type": "DELETE",
-"entity": "",
-"targetRecord": {}
-}
-
-Invoke service -> TRIGGER_SERVICE
-
-{
-"type": "TRIGGER_SERVICE",
-"service": "",
-"inputs": []
-}
-
-FIELD MAPPINGS
-
-Map destination fields to source values.
-
-Example:
-
-{
-"status": "CalculationResult.status",
-"discount": "LoyaltyProgram.discountPercentage"
-}
-
-FINAL OUTPUT RULES
-
-Always generate finalOutput.
-
-Structure:
-
-{
-"type": "UPDATE",
-"entity": "",
-"targetRecord": {},
-"fieldMappings": {}
-}
-
-* Represents the final state mutation.
-* References calculation outputs when applicable.
-* Contains final business outcome fields.
-
-VALIDATION RULES
-
-Before generating JSON:
-
-* Ensure all root sections exist.
-* Ensure dbCall ids are unique.
-* Ensure calculation names are unique.
-* Ensure all consumed dependencies exist.
-* Ensure all referenced fields exist.
-* Ensure UPDATE actions contain targetRecord.
-* Ensure TRIGGER_SERVICE actions contain service.
-* Ensure dynamic joins contain at least one join.
-* Ensure no duplicate lookups exist.
-* Ensure no duplicate calculations exist.
-* Ensure output is valid JSON.
-
+INSTRUCTIONS:
+1. Extract inputs into request_data_extractions.
+2. Map entry-gating logic (e.g., checking region) to eligibility_criteria. 
+3. Map table queries to sequential workflow_steps using snake_case table names.
+4. Translate business outcomes into conditional_routing persistence actions.
+5. Generate a matching test matrix tracking happy path and error branch scenarios.
 """
 
 def extract_docx_content(path: Path) -> str:
